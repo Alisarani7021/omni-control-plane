@@ -148,7 +148,11 @@ export default {
       if (error instanceof HttpError) {
         return json({ error: { code: error.code, message: error.message } }, error.status);
       }
-      console.error("request_failed", { name: error instanceof Error ? error.name : "UnknownError" });
+      console.error("request_failed", {
+        name: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       return json({ error: { code: "internal_error", message: "Internal server error" } }, 500);
     }
   },
