@@ -1,0 +1,28 @@
+{
+  "log": { "level": "warn", "timestamp": true },
+  "inbounds": [
+    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080 }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy",
+      "server": "node.example.com",
+      "server_port": 443,
+      "uuid": "bf000d23-0752-40b4-affe-68f7707a9661",
+      "flow": "xtls-rprx-vision",
+      "network": "tcp",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "utls": { "enabled": true, "fingerprint": "chrome" },
+        "reality": {
+          "enabled": true,
+          "public_key": "72aUmpAluileOu8jctfYeYAY4DCHK74iGYopnNqsi38",
+          "short_id": "0123456789abcdef"
+        }
+      }
+    }
+  ],
+  "route": { "final": "proxy" }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "v13-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-09",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "control.example.com",
+      "custom_domain": true
+    }
+  ],
+  "minify": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "vars": {
+    "PUBLIC_BASE_URL": "https://control.example.com",
+    "BOT_USERNAME": "replace_me_bot",
+    "CF_OAUTH_CLIENT_ID": "replace-after-oauth-client-creation",
+    "SING_BOX_VERSION": "1.14.0",
+    "SESSION_TTL_SECONDS": "2592000",
+    "LOGIN_LINK_TTL_SECONDS": "600",
+    "BOOTSTRAP_TTL_SECONDS": "3600",
+    "ADMIN_TELEGRAM_IDS": ""
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "v13-control-plane",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "v13-provisioning",
+      "binding": "PROVISION_WORKFLOW",
+      "class_name": "ProvisionWorkflow"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "log": { "level": "warn", "timestamp": true },
+  "certificate_providers": [
+    {
+      "type": "acme",
+      "tag": "hy2-acme",
+      "domain": ["node.example.com"],
+      "data_directory": "/tmp/v13-sing-box-test-acme",
+      "default_server_name": "node.example.com",
+      "email": "admin@example.com",
+      "provider": "letsencrypt",
+      "key_type": "p256"
+    }
+  ],
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-reality-in",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [
+        {
+          "name": "v13-user",
+          "uuid": "bf000d23-0752-40b4-affe-68f7707a9661",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "reality": {
+          "enabled": true,
+          "handshake": { "server": "www.microsoft.com", "server_port": 443 },
+          "private_key": "OAhPS_agq3vevVPOLLlwpBrVet8UXyTAjJtrdWiaMWw",
+          "short_id": ["0123456789abcdef"],
+          "max_time_difference": "2m"
+        }
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria2-in",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [{ "name": "v13-user", "password": "A_secure-password_0123456789abcdef" }],
+      "ignore_client_bandwidth": false,
+      "tls": { "enabled": true, "min_version": "1.3", "certificate_provider": "hy2-acme" },
+      "bbr_profile": "standard",
+      "masquerade": {
+        "type": "string",
+        "status_code": 404,
+        "headers": { "content-type": "text/plain; charset=utf-8" },
+        "content": "Not found"
+      }
+    }
+  ]
+}
