@@ -4,6 +4,7 @@
 
 ## کارکرد اصلی
 
+- بخش‌های پنل مستقل OMNI به‌صورت native داخل ربات هستند: رادار IP تمیز `/cleanip`، نقشهٔ زندهٔ سانسور `/map`، هددراپ DNS «WhiteHole» `/whitehole`، استخر اهدای کلید AI `/donate`، سلامت نودها `/health` و شمارش‌های واقعی `/usage`. جزئیات و آنچه عمداً منتقل نشده در [بخش‌های پنل](docs/PANEL-SECTIONS-FA.md) است.
 - ربات تلگرام منوی Omni دارد: بخش «🛰️ ورود به محیط اختصاصی V13» جدا می‌ماند (ورود در مرورگر یا داخل خود تلگرام) و مدیریت کامل هم داخل ربات است: ساخت قدم‌به‌قدم استقرار، جزئیات، تلاش مجدد، ابطال، بوت‌استرپ، اشتراک‌ها و اتصال Cloudflare. ورود API Token فقط در پنل امن انجام می‌شود، هرگز در چت.
 - پنل یک دکمهٔ مستقیم Cloudflare دارد که نام Token و سه permission لازم را از قبل پر می‌کند؛ کاربر فقط account/zone مشخص را محدود و ایجاد را تأیید می‌کند.
 - کاربر **Scoped Cloudflare API Token** حاصل را فقط در فرم HTTPS پنل وارد می‌کند.
@@ -33,6 +34,7 @@ Token هرگز نباید در Telegram، چت، issue، screenshot، source cod
 
 - [نصب از صفر](docs/SETUP-FA.md)
 - [ادغام با ربات Omni](docs/OMNI-INTEGRATION-FA.md)
+- [بخش‌های پنل OMNI در ربات](docs/PANEL-SECTIONS-FA.md)
 - [معماری](docs/ARCHITECTURE-FA.md)
 - [امنیت](docs/SECURITY-FA.md)
 - [عملیات و بازیابی](docs/OPERATIONS-FA.md)

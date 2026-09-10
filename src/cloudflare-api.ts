@@ -156,6 +156,41 @@ export async function upsertARecord(auth: CloudflareAuth, zoneId: string, hostna
   return created.id;
 }
 
+/** Upsert a TXT record (used by the WhiteHole dead-drop writer). */
+export async function upsertTxtRecord(
+  auth: CloudflareAuth,
+  zoneId: string,
+  name: string,
+  value: string,
+  ttl = 120,
+): Promise<string> {
+  const records = await cloudflareApi<Array<{ id: string; type: string; name: string }>>(
+    auth,
+    `/zones/${zoneId}/dns_records?type=TXT&name=${encodeURIComponent(name)}&per_page=10`,
+  );
+  const payload = JSON.stringify({ type: "TXT", name, content: value.slice(0, 4_500), ttl, proxied: false });
+  const existing = records[0];
+  if (existing) {
+    const updated = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records/${existing.id}`, { method: "PUT", body: payload });
+    return updated.id;
+  }
+  const created = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records`, { method: "POST", body: payload });
+  return created.id;
+}
+
+export async function deleteTxtRecords(auth: CloudflareAuth, zoneId: string, name: string): Promise<number> {
+  const records = await cloudflareApi<Array<{ id: string }>>(
+    auth,
+    `/zones/${zoneId}/dns_records?type=TXT&name=${encodeURIComponent(name)}&per_page=20`,
+  );
+  let removed = 0;
+  for (const record of records) {
+    await cloudflareApi<unknown>(auth, `/zones/${zoneId}/dns_records/${record.id}`, { method: "DELETE" });
+    removed += 1;
+  }
+  return removed;
+}
+
 export async function verifyZoneOwnership(auth: CloudflareAuth, zoneId: string, accountId: string): Promise<void> {
   const zone = await cloudflareApi<{ id: string; account: { id: string }; status: string }>(auth, `/zones/${zoneId}`);
   if (zone.account.id !== accountId || zone.status !== "active") throw new Error("Selected zone is not active in the selected account");

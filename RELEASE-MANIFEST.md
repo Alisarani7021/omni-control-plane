@@ -1,8 +1,19 @@
-# V13.3.0 Release Manifest
+# V13.4.0 Release Manifest
 
 Build date: 2026-09-10
 
-## Full worker management inside Telegram
+## OMNI panel sections, ported into the Telegram bot
+
+- The standalone `worker.js` bot surface is now native in this control plane: clean-IP radar (`/cleanip`), live censorship map / نت ملی (`/map`), WhiteHole DNS dead-drop publish & clear (`/whitehole`), AI key donation pool (`/donate`), node health (`/health`) and real counts (`/usage`); every view also has an inline-button equivalent.
+- Crowdsourced telemetry has a public, strictly validated and rate-limited ingest surface: `POST /api/v1/telemetry/clean-ip`, `GET /api/v1/clean-ip` (JSON/text), `POST /api/v1/telemetry/map`, `GET /api/v1/map`, `GET /api/v1/whitehole/fetch.sh`.
+- Honest data only: no simulated probes, no fabricated ping/online/traffic numbers. Unmeasured IPs are labelled `⚪ بدون داده`, and the absence of traffic metering is stated in the usage view.
+- WhiteHole drops publish only IP/port/SNI/resolver TXT shards into the tenant's own zone through their scoped connection (6 publishes/hour); subscription links are never written to public DNS.
+- Donated AI keys require an explicit consent screen, are encrypted with `TOKEN_ENCRYPTION_KEY` in a separate table, are displayed only as a redacted snippet, expire after 30 days, are withdrawn by the donor on demand, are reviewed only by `ADMIN_TELEGRAM_IDS`, and are never described as "active in a global pool".
+- Intentionally not ported (hardcoded bot token in `worker.js` must be revoked, in-chat Cloudflare tokens, remote panel source deployment, forgeable `omni_auth=1` web login, worker-hosted proxy core, non-working PHANTOM decoy configs, `curl | bash` dnstt root installer): see `docs/PANEL-SECTIONS-FA.md`.
+- New `0004_panel_sections.sql` migration plus `telegram_flows` for short-lived report/donation conversations; re-run `scripts/set-telegram-webhook.mjs` to register the six new bot commands.
+- Tests: `tests/clean-ip.test.ts`, `tests/censorship-map.test.ts`, `tests/whitehole.test.ts`, `tests/ai-donate.test.ts`, `tests/telemetry-routes.test.ts` and an extended Telegram webhook suite (117 tests).
+
+## V13.3.0 — Full worker management inside Telegram
 
 - The bot now exposes full worker capabilities natively: step-by-step deployment wizard (7 steps + confirm), deployments list/detail, retry, revoke (with confirmation), bootstrap commands, subscription view/rotation, and Cloudflare connection list/disconnect.
 - The «🛰️ ورود به محیط اختصاصی V13» section stays separate; login now offers two one-time links: open the panel inside Telegram (WebApp) or in the browser.
