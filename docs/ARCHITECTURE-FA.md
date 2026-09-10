@@ -2,9 +2,9 @@
 
 ## ۱. اجزا
 
-1. **Telegram Bot روی Cloudflare Worker**: شناسایی user، ساخت tenant و صدور لینک ورود یک‌بارمصرف.
+1. **Telegram Bot روی Cloudflare Worker**: شناسایی user، ساخت tenant، صدور لینک ورود یک‌بارمصرف و میزبانی native بخش‌های پنل OMNI (رادار IP تمیز، نقشهٔ سانسور، هددراپ WhiteHole، استخر اهدای AI، سلامت نودها).
 2. **Control Plane Worker**: نشست امن، پنل HTTPS، API محدود، webhook عامل و orchestration.
-3. **Cloudflare D1**: tenant، session، connection رمز‌شده، deployment، audit و health.
+3. **Cloudflare D1**: tenant، session، connection رمز‌شده، deployment، audit، health، تله‌متری جمعیتی (رادار/نقشه)، هددراپ و کلیدهای اهدایی.
 4. **Cloudflare Workflows**: اجرای retryپذیر prepare/finalize/revoke.
 5. **Data-plane Worker متعلق به کاربر**: انتشار subscription خصوصی؛ credential کنترل‌پلین را دریافت نمی‌کند.
 6. **VPS متعلق به کاربر**: sing-box واقعی برای VLESS Reality و Hysteria2 و health reporter.

@@ -1,4 +1,15 @@
 import { completeBootstrap, receiveAgentReport, serveBootstrap } from "./agent";
+import { purgeExpiredCleanIpReports } from "./clean-ip";
+import { purgeExpiredMapReports } from "./censorship-map";
+import { purgeExpiredDonations } from "./ai-donate";
+import {
+  cleanIpFeed,
+  mapFeed,
+  submitCleanIpReport,
+  submitMapReport,
+  whiteHoleReader,
+} from "./telemetry-routes";
+import { purgeExpiredWhiteHoleDrops } from "./whitehole";
 import { authenticated, loginFromOneTimeLink, loginRateLimit, logout } from "./auth";
 import { eraseExpiredApiTokens } from "./cloudflare-api";
 import { appPage, landingPage, legalPage, logoSvg, omniPage } from "./dashboard";
@@ -54,6 +65,26 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === "/api/v1/agent/report") {
     const wrongMethod = only(request, ["POST"]);
     return wrongMethod ?? receiveAgentReport(request, env);
+  }
+  if (path === "/api/v1/telemetry/clean-ip") {
+    const wrongMethod = only(request, ["POST"]);
+    return wrongMethod ?? submitCleanIpReport(request, env);
+  }
+  if (path === "/api/v1/clean-ip") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? cleanIpFeed(request, env);
+  }
+  if (path === "/api/v1/telemetry/map") {
+    const wrongMethod = only(request, ["POST"]);
+    return wrongMethod ?? submitMapReport(request, env);
+  }
+  if (path === "/api/v1/map") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? mapFeed(request, env);
+  }
+  if (path === "/api/v1/whitehole/fetch.sh") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? whiteHoleReader(request, env);
   }
   if (path === "/login") {
     const wrongMethod = only(request, ["GET"]);
@@ -172,5 +203,14 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const erased = await eraseExpiredApiTokens(env);
     if (erased > 0) console.log("expired_api_tokens_erased", { count: erased });
+    const [cleanIp, map, drops, donations] = await Promise.all([
+      purgeExpiredCleanIpReports(env),
+      purgeExpiredMapReports(env),
+      purgeExpiredWhiteHoleDrops(env),
+      purgeExpiredDonations(env),
+    ]);
+    if (cleanIp + map + drops + donations > 0) {
+      console.log("telemetry_purged", { cleanIp, map, drops, donations });
+    }
   },
 };
