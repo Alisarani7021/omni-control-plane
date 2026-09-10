@@ -6,11 +6,14 @@
   "workers_dev": false,
   "routes": [
     {
-      "pattern": "control.example.com",
+      "pattern": "control.nnguts.dpdns.org",
       "custom_domain": true
     }
   ],
   "minify": true,
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
   "observability": {
     "enabled": true,
     "logs": {
@@ -20,19 +23,20 @@
     }
   },
   "vars": {
-    "PUBLIC_BASE_URL": "https://control.example.com",
-    "BOT_USERNAME": "replace_me_bot",
+    "PUBLIC_BASE_URL": "https://control.nnguts.dpdns.org",
+    "BOT_USERNAME": "OmniAiGateBot",
     "SING_BOX_VERSION": "1.14.0",
     "SESSION_TTL_SECONDS": "2592000",
     "LOGIN_LINK_TTL_SECONDS": "600",
     "BOOTSTRAP_TTL_SECONDS": "3600",
+    "API_TOKEN_TTL_SECONDS": "7200",
     "ADMIN_TELEGRAM_IDS": ""
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "v13-control-plane",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "02e5cdeb-c236-4569-9267-5a65d8fed464",
       "migrations_dir": "migrations"
     }
   ],

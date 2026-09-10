@@ -1,9 +1,10 @@
-# V13.1.0 Release Manifest
+# V13.1.1 Release Manifest
 
 Build date: 2026-09-10
 
 ## Least-privilege Scoped API Token release
 
+- The dashboard now provides an official Cloudflare template URL that pre-fills the token name and all three required permissions; the user only narrows Account/Zone resources, confirms creation, and pastes the one-time token back into V13.
 - The primary Cloudflare connection path is a scoped API token submitted only through the authenticated same-origin HTTPS dashboard.
 - Global API Key headers are prohibited. OAuth start/callback routes remain disabled and absent from the UI.
 - Required permissions are limited to Workers Scripts Edit on one account plus DNS Edit and Zone Read on one specific zone.

@@ -5,7 +5,8 @@
 ## کارکرد اصلی
 
 - Telegram فقط برای هویت و لینک ورود یک‌بارمصرف است؛ credential در چت دریافت نمی‌شود.
-- کاربر یک **Scoped Cloudflare API Token** را فقط در فرم HTTPS پنل وارد می‌کند.
+- پنل یک دکمهٔ مستقیم Cloudflare دارد که نام Token و سه permission لازم را از قبل پر می‌کند؛ کاربر فقط account/zone مشخص را محدود و ایجاد را تأیید می‌کند.
+- کاربر **Scoped Cloudflare API Token** حاصل را فقط در فرم HTTPS پنل وارد می‌کند.
 - Token باید فقط سه مجوز داشته باشد: `Workers Scripts Edit` برای یک account، و `DNS Edit` و `Zone Read` برای یک zone مشخص.
 - V13 فعال‌بودن Token را با API رسمی Cloudflare بررسی می‌کند، فقط یک zone مجاز را می‌پذیرد و account/zone کشف‌شده را به connection قفل می‌کند.
 - Token با AES-256-GCM و AAD وابسته به connection در D1 رمز می‌شود.

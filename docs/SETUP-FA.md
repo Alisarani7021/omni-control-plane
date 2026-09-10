@@ -110,22 +110,21 @@ unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET PUBLIC_BASE_URL
 
 ## ۷. ساخت Scoped API Token توسط هر کاربر
 
-این بخش فقط داخل Cloudflare Dashboard انجام می‌شود:
+1. در پنل V13 دکمهٔ «ساخت Token آماده در Cloudflare» را بزنید.
+2. Cloudflare نام Token و سه permission لازم را از template رسمی از قبل پر می‌کند.
+3. در `Account Resources` فقط حساب موردنظر را انتخاب کنید.
+4. در `Zone Resources` فقط یک domain مشخص را انتخاب کنید.
+5. `Client IP Address Filtering` را خالی بگذارید؛ Worker IP خروجی ثابت ندارد.
+6. در صورت تمایل TTL خود Cloudflare را کوتاه، مثلاً ۲۴ ساعت، تنظیم کنید.
+7. `Continue to summary → Create Token` را بزنید.
+8. Token فقط یک بار نمایش داده می‌شود؛ آن را کپی و مستقیم در password input پنل V13 Paste کنید.
+9. Token را در Telegram، Terminal یا screenshot قرار ندهید.
 
-1. `My Profile → API Tokens`
-2. `Create Token`
-3. پایین صفحه `Create Custom Token`
-4. نام Token: `V13 temporary provisioning`
-5. Permission اول: `Account → Workers Scripts → Edit`
-6. Permission دوم: `Zone → DNS → Edit`
-7. Permission سوم: `Zone → Zone → Read`
-8. `Account Resources → Include → Specific account` و فقط حساب موردنظر
-9. `Zone Resources → Include → Specific zone` و فقط یک domain موردنظر
-10. `Client IP Address Filtering` را خالی بگذارید؛ Worker IP خروجی ثابت ندارد.
-11. در صورت تمایل TTL خود Cloudflare را کوتاه، مثلاً ۲۴ ساعت، تنظیم کنید.
-12. `Continue to summary → Create Token`
-13. Token فقط یک بار نمایش داده می‌شود؛ آن را مستقیم در password input پنل HTTPS Paste کنید.
-14. Token را در Telegram، Terminal یا screenshot قرار ندهید.
+Template این سه permission را خودکار پر می‌کند:
+
+- `Account → Workers Scripts → Edit`
+- `Zone → DNS → Edit`
+- `Zone → Zone → Read`
 
 V13 Tokenهایی را که بیش از یک zone active نشان دهند رد می‌کند تا resource boundary محدود بماند.
 
