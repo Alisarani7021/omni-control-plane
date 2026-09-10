@@ -20,6 +20,7 @@ interface TokenZone {
   name: string;
   status: string;
   account: { id: string; name: string };
+  permissions?: string[];
 }
 
 function validateApiToken(value: unknown): string {
@@ -79,16 +80,20 @@ export async function createTemporaryApiTokenConnection(
     );
   }
   if (zones.length === 0) {
-    throw new HttpError(403, "cloudflare_zone_unavailable", "Token cannot access an active Cloudflare zone");
+    throw new HttpError(403, "cloudflare_zone_unavailable", "Token به هیچ Zone قابل‌استفاده‌ای دسترسی ندارد");
   }
-  if (zones.length !== 1) {
+  const hasPermissionMetadata = zones.some((item) => Array.isArray(item.permissions));
+  const manageableZones = hasPermissionMetadata
+    ? zones.filter((item) => item.permissions?.includes("#dns_records:edit"))
+    : zones;
+  if (manageableZones.length !== 1) {
     throw new HttpError(
       403,
       "cloudflare_token_scope_too_broad",
-      "For least privilege, restrict the token to exactly one specific active zone",
+      "Token هنوز به چند Zone دسترسی DNS Edit دارد؛ در Cloudflare فقط یک Specific zone انتخاب کنید",
     );
   }
-  const zone = zones[0];
+  const zone = manageableZones[0];
   if (zone?.status !== "active") {
     throw new HttpError(403, "cloudflare_zone_inactive", "The token's single Cloudflare zone must be active");
   }

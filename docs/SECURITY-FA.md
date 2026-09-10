@@ -25,7 +25,7 @@ Token پیشنهادی سه permission دارد:
 
 `Workers Scripts Edit` در مدل Cloudflare account-scoped است و به یک zone محدود نمی‌شود؛ بنابراین Account Resources باید فقط account لازم باشد. هیچ دسترسی Billing، API Tokens، Memberships، Account Settings، SSL، WAF یا zoneهای دیگر لازم نیست.
 
-V13 فقط Tokenهایی را می‌پذیرد که دقیقاً یک zone active را expose کنند. account/zone کشف‌شده داخل connection ثبت و قبل از deployment تطبیق داده می‌شود. preflight خواندن DNS و Workers غیرمخرب است؛ write واقعی فقط هنگام provisioning انجام می‌شود. Token اشتباه یا Read-only در اولین عملیات write به‌صورت fail-closed متوقف می‌شود.
+V13 فقط Tokenهایی را می‌پذیرد که دقیقاً یک zone active با مجوز مؤثر `#dns_records:edit` داشته باشند. اگر Cloudflare در zone-list دامنه‌های صرفاً قابل‌مشاهده را نیز برگرداند، آن‌ها با permission metadata حذف می‌شوند. account/zone نهایی داخل connection ثبت و قبل از deployment تطبیق داده می‌شود. preflight خواندن DNS و Workers غیرمخرب است؛ write واقعی فقط هنگام provisioning انجام می‌شود. Token اشتباه یا Read-only در اولین عملیات write به‌صورت fail-closed متوقف می‌شود.
 
 ## ۳. کنترل چرخهٔ عمر
 

@@ -100,6 +100,26 @@ describe("scoped API token connection endpoint", () => {
     expect(insert?.values[2]).not.toBe(secret);
   });
 
+  it("uses effective DNS-edit permission metadata when Cloudflare lists extra zones", async () => {
+    const { env } = mockEnv();
+    const selected = { ...zone, permissions: ["#zone:read", "#dns_records:read", "#dns_records:edit"] };
+    const visibleOnly = {
+      ...zone,
+      id: "cccccccccccccccccccccccccccccccc",
+      name: "visible-only.example",
+      permissions: ["#zone:read"],
+    };
+    vi.stubGlobal("fetch", cloudflareFetch([selected, visibleOnly]));
+
+    const response = await createTemporaryApiTokenConnection(
+      requestFor("scoped-api-token-secret-1234567890"),
+      env,
+      principal,
+    );
+
+    expect(response.status).toBe(201);
+  });
+
   it("fails closed when a token exposes more than one active zone", async () => {
     const { env, statements } = mockEnv();
     const secondZone = { ...zone, id: "cccccccccccccccccccccccccccccccc", name: "other.example" };
