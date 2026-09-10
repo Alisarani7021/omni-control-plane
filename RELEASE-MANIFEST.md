@@ -1,6 +1,15 @@
-# V13.1.4 Release Manifest
+# V13.2.0 Release Manifest
 
 Build date: 2026-09-10
+
+## Omni private-section integration
+
+- The Telegram bot is now the Omni private section: `/start` shows the Omni main menu with a dedicated «🛰️ ورود به محیط اختصاصی V13» button; pressing it issues a one-time login link and the follow-up button enters `/app`.
+- Direct entry links (`/start v13`, plus `panel`/`app`/`omni` args), `/panel`, `/status` (Persian status summary, no secrets in chat) and `/help` commands are supported; plain-text menu labels work as button equivalents.
+- Webhook registration now subscribes to `message` + `callback_query` and installs bot commands; re-run `scripts/set-telegram-webhook.mjs` after deploy.
+- A dedicated branded entry page is served at `GET /omni` and linked from the landing page.
+- Optional coexistence with an external Omni worker via `OMNI_FALLBACK_URL` (+ `OMNI_FALLBACK_SECRET`): updates outside the V13 section are forwarded over HTTPS; topologies are documented in `docs/OMNI-INTEGRATION-FA.md`.
+- Free-text messages no longer receive a login link; the bot replies with a security reminder and the menu. Behavior change is intentional.
 
 ## nginx coexistence and pinned Hysteria2 TLS
 
@@ -48,7 +57,7 @@ Build date: 2026-09-10
 - Security preflight: passed
 - Oxlint: 0 warnings and 0 errors
 - TypeScript strict typecheck: passed
-- Vitest: 23/23 tests passed across 5 files in the production Codespace
+- Vitest: 38/38 tests passed across 6 files (15 new Omni/Telegram tests)
 - npm audit: 0 known vulnerabilities
 - Wrangler 4.130.0 dry-run build under Node.js 22: passed
 - D1 clean local migration: both migrations applied; auth/resource columns and expiry index verified

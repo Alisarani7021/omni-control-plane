@@ -12,6 +12,8 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   TOKEN_ENCRYPTION_KEY: string;
+  OMNI_FALLBACK_URL?: string;
+  OMNI_FALLBACK_SECRET?: string;
 }
 
 export type WorkflowParams =
@@ -95,19 +97,49 @@ export interface AgentCompletePayload {
   configSha256: string;
 }
 
-export interface TelegramUpdate {
-  update_id: number;
+export interface TelegramFrom {
+  id: number;
+  is_bot: boolean;
+  first_name: string;
+  last_name?: string;
+  username?: string;
+  language_code?: string;
+}
+
+export interface TelegramChat {
+  id: number;
+  type: string;
+}
+
+export interface TelegramMessage {
+  message_id: number;
+  chat: TelegramChat;
+  from?: TelegramFrom;
+  text?: string;
+}
+
+export interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramFrom;
   message?: {
     message_id: number;
-    chat: { id: number; type: string };
-    from?: {
-      id: number;
-      is_bot: boolean;
-      first_name: string;
-      last_name?: string;
-      username?: string;
-      language_code?: string;
-    };
-    text?: string;
+    chat: TelegramChat;
   };
+  data?: string;
+}
+
+export interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+}
+
+export interface TelegramInlineKeyboardButton {
+  text: string;
+  callback_data?: string;
+  url?: string;
+}
+
+export interface TelegramInlineKeyboard {
+  inline_keyboard: TelegramInlineKeyboardButton[][];
 }

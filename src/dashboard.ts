@@ -21,11 +21,28 @@ export function logoSvg(): Response {
   });
 }
 
+function botUsername(env: Env): string {
+  return /^[A-Za-z0-9_]{5,64}$/u.test(env.BOT_USERNAME) ? env.BOT_USERNAME : "replace_me_bot";
+}
+
+function botDeepLink(env: Env, arg: string): string {
+  return `https://t.me/${botUsername(env)}?start=${encodeURIComponent(arg)}`;
+}
+
 export function landingPage(env: Env): Response {
   const nonce = requestNonce();
-  const username = /^[A-Za-z0-9_]{5,64}$/u.test(env.BOT_USERNAME) ? env.BOT_USERNAME : "replace_me_bot";
-  const body = `<div class="wrap"><header class="top"><div class="brand"><span class="mark"></span><span>V13 / CONTROL PLANE</span></div><span class="muted">BYOC · Scoped API Token · D1 · Workflows</span></header><main class="hero"><div class="eyebrow">Secure infrastructure orchestration</div><h1>کنترل‌پلین امن برای زیرساختی که مالک آن خود شما هستید.</h1><p class="muted">V13 تلگرام را فقط به‌عنوان رابط کاربری به‌کار می‌گیرد، Scoped API Token کلادفلر را فقط در پنل HTTPS و به‌صورت موقت دریافت می‌کند و روی VPS واقعی فقط VLESS Reality و Hysteria2 را پس از اعتبارسنجی نصب می‌کند.</p><div class="actions"><a class="btn" href="https://t.me/${escapeHtml(username)}">شروع از ربات تلگرام</a><a class="btn secondary" href="/healthz">وضعیت سرویس</a></div></main><section class="grid"><article class="card"><h3>بدون کلید در چت</h3><p class="muted">Cloudflare API Token، رمز VPS و کلید خصوصی هرگز در تلگرام یا چت دریافت نمی‌شوند.</p></article><article class="card"><h3>اجرای ماندگار</h3><p class="muted">Provisioning با Workflows، عملیات idempotent و وضعیت قابل پیگیری انجام می‌شود.</p></article><article class="card"><h3>خروجی واقعی</h3><p class="muted">اشتراک خصوصی فقط برای پروتکل‌های نصب‌شده تولید می‌شود؛ لینک ساختگی وجود ندارد.</p></article></section><footer class="footer">V13 هیچ تضمینی دربارهٔ اتصال در قطع کامل مسیر بین‌الملل ارائه نمی‌کند. · <a href="/privacy">حریم خصوصی</a> · <a href="/terms">شرایط استفاده</a></footer></div>`;
+  const username = escapeHtml(botUsername(env));
+  const deepLink = escapeHtml(botDeepLink(env, "v13"));
+  const body = `<div class="wrap"><header class="top"><div class="brand"><span class="mark"></span><span>V13 / CONTROL PLANE</span></div><span class="muted">BYOC · Scoped API Token · D1 · Workflows</span></header><main class="hero"><div class="eyebrow">Secure infrastructure orchestration</div><h1>کنترل‌پلین امن برای زیرساختی که مالک آن خود شما هستید.</h1><p class="muted">V13 تلگرام را فقط به‌عنوان رابط کاربری به‌کار می‌گیرد، Scoped API Token کلادفلر را فقط در پنل HTTPS و به‌صورت موقت دریافت می‌کند و روی VPS واقعی فقط VLESS Reality و Hysteria2 را پس از اعتبارسنجی نصب می‌کند.</p><div class="actions"><a class="btn" href="${deepLink}">شروع از ربات تلگرام</a><a class="btn secondary" href="/omni">بخش اختصاصی Omni</a><a class="btn secondary" href="/healthz">وضعیت سرویس</a></div></main><section class="grid"><article class="card"><h3>بدون کلید در چت</h3><p class="muted">Cloudflare API Token، رمز VPS و کلید خصوصی هرگز در تلگرام یا چت دریافت نمی‌شوند.</p></article><article class="card"><h3>اجرای ماندگار</h3><p class="muted">Provisioning با Workflows، عملیات idempotent و وضعیت قابل پیگیری انجام می‌شود.</p></article><article class="card"><h3>خروجی واقعی</h3><p class="muted">اشتراک خصوصی فقط برای پروتکل‌های نصب‌شده تولید می‌شود؛ لینک ساختگی وجود ندارد.</p></article></section><footer class="footer">ربات: <a href="https://t.me/${username}">@${username}</a> · V13 هیچ تضمینی دربارهٔ اتصال در قطع کامل مسیر بین‌الملل ارائه نمی‌کند. · <a href="/privacy">حریم خصوصی</a> · <a href="/terms">شرایط استفاده</a></footer></div>`;
   return html(shell(body, nonce, "V13 Control Plane"), nonce);
+}
+
+export function omniPage(env: Env): Response {
+  const nonce = requestNonce();
+  const username = escapeHtml(botUsername(env));
+  const deepLink = escapeHtml(botDeepLink(env, "v13"));
+  const body = `<div class="wrap"><header class="top"><div class="brand"><span class="mark"></span><span>OMNI × V13</span></div><a class="btn secondary" href="/">بازگشت</a></header><main class="hero"><div class="eyebrow">Omni private section · ورود با یک لمس</div><h1>محیط اختصاصی Omni — کنترل‌پلین V13</h1><p class="muted">این بخش اختصاصی شماست. دکمهٔ زیر ربات تلگرام را با ورودی مستقیم V13 باز می‌کند؛ ربات یک لینک ورود یک‌بارمصرف می‌سازد و با زدن دکمهٔ «ورود به محیط اختصاصی» وارد پنل امن می‌شوید.</p><div class="actions"><a class="btn" href="${deepLink}">🛰️ ورود به محیط اختصاصی از تلگرام</a><a class="btn secondary" href="/healthz">وضعیت سرویس</a></div></main><section class="grid"><article class="card"><h3>۱ · ربات را باز کنید</h3><p class="muted">لینک مستقیم: <a href="${deepLink}">t.me/${username}?start=v13</a> — ربات شما را می‌شناسد و منوی Omni را نشان می‌دهد.</p></article><article class="card"><h3>۲ · دکمه را بزنید</h3><p class="muted">«🛰️ ورود به محیط اختصاصی V13» یک لینک یک‌بارمصرف کوتاه‌عمر می‌سازد؛ هیچ رمزی در چت لازم نیست.</p></article><article class="card"><h3>۳ · وارد محیط شوید</h3><p class="muted">با همان دکمه وارد پنل HTTPS می‌شوید: اتصال موقت Cloudflare، ساخت نود واقعی و اشتراک خصوصی.</p></article></section><footer class="footer">ربات: <a href="https://t.me/${username}">@${username}</a> · <a href="/privacy">حریم خصوصی</a> · <a href="/terms">شرایط استفاده</a></footer></div>`;
+  return html(shell(body, nonce, "محیط اختصاصی Omni × V13"), nonce);
 }
 
 export function legalPage(kind: "privacy" | "terms"): Response {
