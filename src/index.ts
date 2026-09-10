@@ -1,7 +1,7 @@
 import { completeBootstrap, receiveAgentReport, serveBootstrap } from "./agent";
 import { authenticated, loginFromOneTimeLink, loginRateLimit, logout } from "./auth";
 import { eraseExpiredApiTokens } from "./cloudflare-api";
-import { appPage, landingPage, legalPage, logoSvg } from "./dashboard";
+import { appPage, landingPage, legalPage, logoSvg, omniPage } from "./dashboard";
 import {
   createDeployment,
   getDeployment,
@@ -63,6 +63,10 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === "/") {
     const wrongMethod = only(request, ["GET"]);
     return wrongMethod ?? landingPage(env);
+  }
+  if (path === "/omni") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? omniPage(env);
   }
   if (["/setwebhook", "/sub", "/profile", "/panel", "/api/login", "/api/users"].includes(path)) {
     return json({ error: { code: "not_found", message: "Not found" } }, 404);

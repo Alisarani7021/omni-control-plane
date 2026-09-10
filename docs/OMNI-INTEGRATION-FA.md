@@ -1,0 +1,111 @@
+# ادغام V13 با ربات Omni — راهنمای فارسی
+
+این سند توضیح می‌دهد ربات تلگرام داخل همین ریپو (`BOT_USERNAME`) چگونه به‌عنوان
+«بخش اختصاصی Omni» عمل می‌کند و با زدن یک دکمه وارد محیط V13 می‌شوید.
+
+## ۱. تجربهٔ کاربر (جریان دکمه)
+
+1. کاربر لینک مستقیم را باز می‌کند:
+   `https://t.me/<bot>?start=v13`
+   یا در ربات `/start` می‌فرستد.
+2. ربات منوی اصلی Omni را با دکمهٔ اختصاصی نشان می‌دهد:
+   - 🛰️ **ورود به محیط اختصاصی V13** (`v13:login`)
+   - 📊 وضعیت استقرارها (`v13:status`)
+   - ❓ راهنما (`v13:help`)
+3. با زدن دکمهٔ ورود، ربات یک **لینک یک‌بارمصرف کوتاه‌عمر** می‌سازد و دکمهٔ
+   «🛰️ ورود به محیط اختصاصی» را می‌فرستد.
+4. با زدن همان دکمه، مرورگر `/login?t=...` را باز می‌کند، نشست امن ساخته
+   می‌شود و کاربر وارد `/app` (محیط V13) می‌شود.
+
+صفحهٔ وب اختصاصی همین بخش هم در مسیر `/omni` همین ورکر قرار دارد و سه قدم
+بالا را با دکمهٔ مستقیم تلگرام نشان می‌دهد.
+
+## ۲. دستورها و دکمه‌های بخش V13
+
+| ورودی | رفتار |
+|---|---|
+| `/start` | منوی اصلی Omni |
+| `/start v13` (و `panel`/`app`/`omni`) | صدور مستقیم لینک ورود |
+| `/panel` | صدور لینک ورود به محیط اختصاصی |
+| `/status` | وضعیت استقرارها، بدون نمایش هیچ secret |
+| `/help` | راهنما |
+| متن «🛰️ محیط اختصاصی V13» و بقیهٔ لیبل‌های منو | معادل دکمهٔ متناظر |
+
+پیام متنی آزاد ذخیره نمی‌شود؛ اگر متن ناآشنا برسد، ربات یادآوری امنیتی
+می‌فرستد و منو را دوباره نشان می‌دهد. هیچ API Token یا رمزی در چت دریافت
+نمی‌شود.
+
+## ۳. ثبت وب‌هوک (لازم بعد از این تغییر)
+
+اسکریپت حالا `callback_query` را هم ثبت می‌کند و دستورهای ربات را می‌سازد:
+
+```bash
+read -rsp "Bot token: " TELEGRAM_BOT_TOKEN; echo
+export TELEGRAM_BOT_TOKEN
+export PUBLIC_BASE_URL="https://control.example.com"
+node scripts/set-telegram-webhook.mjs
+unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET PUBLIC_BASE_URL
+```
+
+## ۴. اگر ربات Omni جداگانه‌ای هم دارید (دو ورکر، یک ربات)
+
+تلگرام برای هر ربات فقط **یک** webhook نگه می‌دارد؛ پس یکی از سه توپولوژی را
+انتخاب کنید:
+
+### حالت A — V13 گیرندهٔ اصلی است (پیش‌فرض)
+
+وب‌هوک روی `https://<control>/telegram/webhook` ثبت است. هر آپدیتی که متعلق
+به V13 نباشد (دستور ناآشنا، متن آزاد، `callback` ناآشنا، انواع دیگر آپدیت)
+به ورکر Omni خارجی فوروارد می‌شود:
+
+- `vars.OMNI_FALLBACK_URL = "https://omni-worker.example.com/telegram/webhook"`
+- `wrangler secret put OMNI_FALLBACK_SECRET` (اختیاری؛ به‌صورت `Authorization: Bearer` ارسال می‌شود)
+
+اگر فوروارد تنظیم نباشد، خود V13 با منو پاسخ می‌دهد.
+
+### حالت B — ورکر Omni گیرندهٔ اصلی است
+
+وب‌هوک روی ورکر Omni ثبت است و فقط آپدیت‌های V13 را به V13 فوروارد می‌کند.
+کافی است بدنهٔ خام آپدیت را بدون تغییر به وب‌هوک V13 بفرستد:
+
+```ts
+const isV13 =
+  update.callback_query?.data?.startsWith("v13:") ||
+  update.callback_query?.data?.startsWith("omni:") ||
+  ["/start", "/panel", "/status", "/help"].some((c) =>
+    (update.message?.text ?? "").trim().toLowerCase().startsWith(c),
+  );
+
+if (isV13) {
+  await fetch("https://<control>/telegram/webhook", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": V13_WEBHOOK_SECRET,
+    },
+    body: JSON.stringify(update),
+  });
+  return new Response(JSON.stringify({ ok: true }));
+}
+// ... ادامهٔ منطق Omni
+```
+
+تابع کمکی `isV13TelegramUpdate(update, botUsername)` در `src/telegram.ts`
+همین تشخیص را انجام می‌دهد و می‌توانید آن را import کنید.
+
+### حالت C — تک‌ورکر (ادغام کامل کد)
+
+اگر می‌خواهید همه‌چیز در یک ورکر باشد، همین `handleTelegramWebhook` را از
+`src/telegram.ts` import کنید و آپدیت‌ها را به آن بدهید؛ این تابع فقط به
+`Request` و `Env` نیاز دارد و آپدیت‌های غیر V13 را (در صورت تنظیم
+`OMNI_FALLBACK_URL`) پاس می‌دهد یا با منو جواب می‌دهد.
+
+## ۵. نکات امنیتی
+
+- احراز وب‌هوک با `X-Telegram-Bot-Api-Secret-Token` و مقایسهٔ ثابت‌زمانه
+  انجام می‌شود؛ `update_id` تکراری نادیده گرفته می‌شود.
+- پیام‌های ورود با `protect_content` ارسال می‌شوند تا فوروارد نشوند.
+- دستور `/status` فقط نام ورکر، وضعیت فارسی و hostname نود را نشان می‌دهد؛
+  subscription، توکن و secret هرگز در چت نمی‌آید.
+- فوروارد به `OMNI_FALLBACK_URL` فقط روی HTTPS انجام می‌شود.
+- محدودیت نرخ: ۱۲ درخواست در دقیقه برای هر کاربر تلگرام (پیام و دکمه مشترک).

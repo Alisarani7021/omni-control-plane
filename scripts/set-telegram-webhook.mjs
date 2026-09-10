@@ -12,19 +12,37 @@ if (!/^[A-Za-z0-9_-]{32,256}$/.test(webhookSecret)) {
 }
 const origin = new URL(publicBaseUrl);
 if (origin.protocol !== "https:") throw new Error("PUBLIC_BASE_URL must use HTTPS");
-const response = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    url: `${origin.origin}/telegram/webhook`,
-    secret_token: webhookSecret,
-    allowed_updates: ["message"],
-    drop_pending_updates: true,
-  }),
+async function telegramApi(method, payload) {
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  return { response, result };
+}
+
+const webhook = await telegramApi("setWebhook", {
+  url: `${origin.origin}/telegram/webhook`,
+  secret_token: webhookSecret,
+  allowed_updates: ["message", "callback_query"],
+  drop_pending_updates: true,
 });
-const result = await response.json();
-if (!response.ok || !result.ok) {
-  console.error(`Telegram rejected webhook setup (HTTP ${response.status}).`);
+if (!webhook.response.ok || !webhook.result.ok) {
+  console.error(`Telegram rejected webhook setup (HTTP ${webhook.response.status}).`);
   process.exit(1);
 }
-console.log("Telegram webhook registered successfully. No secret value was printed.");
+
+const commands = await telegramApi("setMyCommands", {
+  commands: [
+    { command: "start", description: "منوی اصلی Omni" },
+    { command: "panel", description: "ورود به محیط اختصاصی V13" },
+    { command: "status", description: "وضعیت استقرارها" },
+    { command: "help", description: "راهنما" },
+  ],
+});
+if (!commands.response.ok || !commands.result.ok) {
+  console.error(`Webhook registered, but Telegram rejected setMyCommands (HTTP ${commands.response.status}).`);
+  process.exit(1);
+}
+console.log("Telegram webhook (message + callback_query) and bot commands registered successfully. No secret value was printed.");
