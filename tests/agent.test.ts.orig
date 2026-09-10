@@ -87,10 +87,4 @@ describe("VPS bootstrap", () => {
   it("does not use an unreviewed curl-to-shell pipeline", () => {
     expect(script).not.toMatch(/curl[^\n]*\|\s*(?:sudo\s+)?(?:ba)?sh/u);
   });
-
-  it("avoids SIGPIPE-prone Bootstrap pipelines", () => {
-    expect(script).toContain("-perm -u+x -print -quit");
-    expect(script).not.toContain("| head");
-  });
-
 });

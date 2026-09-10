@@ -9,6 +9,7 @@ import {
   retryDeployment,
   revokeDeployment,
   rotateBootstrapToken,
+  rotateSubscriptionToken,
 } from "./deployments";
 import { createTemporaryApiTokenConnection } from "./api-token";
 import { HttpError, json, methodNotAllowed, requireSameOrigin } from "./http";
@@ -128,7 +129,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     return createDeployment(request, env, principal);
   }
 
-  const deploymentMatch = /^\/api\/v1\/deployments\/([0-9a-f-]{36})(?:\/(bootstrap-token|retry|revoke))?$/u.exec(path);
+  const deploymentMatch = /^\/api\/v1\/deployments\/([0-9a-f-]{36})(?:\/(bootstrap-token|subscription-token|retry|revoke))?$/u.exec(path);
   if (deploymentMatch?.[1]) {
     const deploymentId = deploymentMatch[1];
     const action = deploymentMatch[2];
@@ -140,6 +141,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (wrongMethod) return wrongMethod;
     requireSameOrigin(request, env);
     if (action === "bootstrap-token") return rotateBootstrapToken(request, env, principal, deploymentId);
+    if (action === "subscription-token") return rotateSubscriptionToken(request, env, principal, deploymentId);
     if (action === "retry") return retryDeployment(request, env, principal, deploymentId);
     return revokeDeployment(request, env, principal, deploymentId);
   }

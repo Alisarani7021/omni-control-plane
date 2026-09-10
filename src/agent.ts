@@ -72,7 +72,7 @@ printf 'Downloading pinned sing-box %s for %s...\n' "$VERSION" "$ARCH"
 curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 "$URL" -o "$ARCHIVE"
 printf '%s  %s\n' "$EXPECTED_SHA" "$ARCHIVE" | sha256sum --check --status || fail "sing-box SHA-256 mismatch"
 tar -xzf "$ARCHIVE" -C "$TMP_DIR"
-SING_BOX_SOURCE=$(find "$TMP_DIR" -type f -name sing-box -perm -u+x | head -n 1)
+SING_BOX_SOURCE=$(find "$TMP_DIR" -type f -name sing-box -perm -u+x -print -quit)
 [ -n "$SING_BOX_SOURCE" ] || fail "sing-box executable not found in archive"
 "$SING_BOX_SOURCE" version | grep -F "sing-box version $VERSION" >/dev/null || fail "Unexpected sing-box version"
 install -m 0755 "$SING_BOX_SOURCE" /usr/local/bin/sing-box
@@ -89,7 +89,7 @@ REALITY_PRIVATE_KEY=$(printf '%s\n' "$KEYPAIR" | awk -F': ' '$1 == "PrivateKey" 
 REALITY_PUBLIC_KEY=$(printf '%s\n' "$KEYPAIR" | awk -F': ' '$1 == "PublicKey" {print $2}')
 VLESS_UUID=$(/usr/local/bin/sing-box generate uuid)
 REALITY_SHORT_ID=$(/usr/local/bin/sing-box generate rand --hex 8)
-HYSTERIA2_PASSWORD=$(openssl rand -base64 36 | tr -d '=+/\n' | head -c 43)
+HYSTERIA2_PASSWORD=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')
 AGENT_TOKEN=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
 HY2_CERT_TMP="$TMP_DIR/hysteria2.crt"
 HY2_KEY_TMP="$TMP_DIR/hysteria2.key"

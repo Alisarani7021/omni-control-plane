@@ -4,8 +4,11 @@ import {
   disconnectConnectionIfIdle,
   getConnection,
   getValidCloudflareAuth,
+  uploadWorkerScript,
 } from "./cloudflare-api";
+import { DATA_PLANE_SOURCE } from "./data-plane-source";
 import { HttpError, json, readJson } from "./http";
+import { buildReadyBundle } from "./profiles";
 import {
   addSecondsIso,
   decryptJson,
@@ -212,6 +215,15 @@ async function ensureActiveDeploymentConnection(
     .bind(replacement.id, nowIso(), deployment.id, principal.tenantId).run();
 }
 
+function subscriptionUrls(deployment: DeploymentRow, subscriptionToken: string): Record<string, string> {
+  const base = `https://${deployment.worker_hostname}/sub/${encodeURIComponent(subscriptionToken)}`;
+  return {
+    uri: base,
+    singBoxVless: `${base}?format=sing-box&profile=vless`,
+    singBoxHysteria2: `${base}?format=sing-box&profile=hysteria2`,
+  };
+}
+
 export async function getDeployment(
   env: Env,
   principal: SessionPrincipal,
@@ -224,12 +236,7 @@ export async function getDeployment(
       .bind(deployment.id).first<{ bundle_enc: string }>();
     if (row) {
       const secrets = await decryptJson<SecretBundle>(row.bundle_enc, env.TOKEN_ENCRYPTION_KEY, `deployment:${deployment.id}`);
-      const base = `https://${deployment.worker_hostname}/sub/${encodeURIComponent(secrets.subscriptionToken)}`;
-      subscriptions = {
-        uri: base,
-        singBoxVless: `${base}?format=sing-box&profile=vless`,
-        singBoxHysteria2: `${base}?format=sing-box&profile=hysteria2`,
-      };
+      subscriptions = subscriptionUrls(deployment, secrets.subscriptionToken);
     }
   }
   return json({
@@ -279,6 +286,59 @@ export async function rotateBootstrapToken(
     request,
   });
   return json({ bootstrap: bootstrapInstructions(env, rawToken, deployment.id) });
+}
+
+export async function rotateSubscriptionToken(
+  request: Request,
+  env: Env,
+  principal: SessionPrincipal,
+  deploymentId: string,
+): Promise<Response> {
+  const deployment = await ownedDeployment(env, principal, deploymentId);
+  if (deployment.status !== "ready" || !deployment.agent_token_hash) {
+    throw new HttpError(409, "invalid_deployment_state", "Subscription credentials can only be rotated for a ready deployment");
+  }
+  await ensureActiveDeploymentConnection(env, principal, deployment, await requestedConnectionId(request));
+  const current = await ownedDeployment(env, principal, deploymentId);
+  const row = await env.DB.prepare("SELECT bundle_enc FROM deployment_secrets WHERE deployment_id = ?")
+    .bind(current.id).first<{ bundle_enc: string }>();
+  if (!row) throw new Error("Deployment secret bundle is missing");
+
+  const secrets = await decryptJson<SecretBundle>(row.bundle_enc, env.TOKEN_ENCRYPTION_KEY, `deployment:${current.id}`);
+  const subscriptionToken = randomToken(32);
+  const subscriptionTokenHash = await sha256(subscriptionToken);
+  const rotatedSecrets: SecretBundle = { ...secrets, subscriptionToken };
+  const rotatedBundleEnc = await encryptJson(rotatedSecrets, env.TOKEN_ENCRYPTION_KEY, `deployment:${current.id}`);
+  const connection = await getConnection(env, current.oauth_connection_id, principal.tenantId);
+  const auth = await getValidCloudflareAuth(env, connection);
+
+  await uploadWorkerScript(auth, current.account_id, current.worker_name, DATA_PLANE_SOURCE, {
+    SUB_TOKEN_HASH: subscriptionTokenHash,
+    CONFIG_BUNDLE: JSON.stringify(buildReadyBundle(current, rotatedSecrets)),
+  });
+  const now = nowIso();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE deployment_secrets SET bundle_enc = ?, version = version + 1, updated_at = ? WHERE deployment_id = ?")
+      .bind(rotatedBundleEnc, now, current.id),
+    env.DB.prepare("UPDATE deployments SET subscription_token_hash = ?, updated_at = ? WHERE id = ?")
+      .bind(subscriptionTokenHash, now, current.id),
+  ]);
+  await audit(env, {
+    tenantId: current.tenant_id,
+    actorType: "user",
+    actorId: principal.telegramUserId,
+    action: "subscription.rotate",
+    resourceType: "deployment",
+    resourceId: current.id,
+    outcome: "success",
+    request,
+  });
+  try {
+    await disconnectConnectionIfIdle(env, current.oauth_connection_id, current.id);
+  } catch {
+    // The expiry cron remains the final cleanup safety net.
+  }
+  return json({ ok: true, subscriptions: subscriptionUrls(current, subscriptionToken) });
 }
 
 export async function retryDeployment(

@@ -1,0 +1,18 @@
+{
+  "log": { "level": "warn", "timestamp": true },
+  "inbounds": [
+    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080 }
+  ],
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "proxy",
+      "server": "node.example.com",
+      "server_port": 443,
+      "password": "A_secure-password_0123456789abcdef",
+      "tls": { "enabled": true, "server_name": "node.example.com" },
+      "bbr_profile": "standard"
+    }
+  ],
+  "route": { "final": "proxy" }
+}

@@ -44,7 +44,7 @@ export default {
     if (url.pathname === "/healthz") {
       return Response.json({ ok: true, service: "v13-data-plane" }, { headers: headers("application/json; charset=utf-8") });
     }
-    const match = /^\\/sub\\/([A-Za-z0-9_-]{43,128})$/u.exec(url.pathname);
+    const match = /^\/sub\/([A-Za-z0-9_-]{43,128})$/u.exec(url.pathname);
     if (!match) return new Response("Not found", { status: 404, headers: headers("text/plain; charset=utf-8") });
     const candidateHash = await sha256(match[1]);
     if (!(await equalHash(candidateHash, env.SUB_TOKEN_HASH))) {
@@ -61,7 +61,7 @@ export default {
     }
     const format = url.searchParams.get("format") || "uri";
     if (format === "uri") {
-      return new Response(bundle.uris.join("\\n") + "\\n", { headers: headers("text/plain; charset=utf-8") });
+      return new Response(bundle.uris.join("\n") + "\n", { headers: headers("text/plain; charset=utf-8") });
     }
     if (format === "sing-box") {
       const profile = url.searchParams.get("profile") || "vless";
