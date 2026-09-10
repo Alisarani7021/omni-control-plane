@@ -71,6 +71,8 @@ export function assertAgentCompletePayload(input: unknown): asserts input is {
   realityPublicKey: string;
   realityShortId: string;
   hysteria2Password: string;
+  hysteria2CertSha256: string;
+  hysteria2SpkiSha256: string;
   configSha256: string;
 } {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "invalid_input", "Expected an object");
@@ -83,6 +85,8 @@ export function assertAgentCompletePayload(input: unknown): asserts input is {
     realityPublicKey: /^[A-Za-z0-9_-]{43}$/u,
     realityShortId: /^[0-9a-f]{16}$/u,
     hysteria2Password: /^[A-Za-z0-9_-]{32,128}$/u,
+    hysteria2CertSha256: /^[0-9a-f]{64}$/u,
+    hysteria2SpkiSha256: /^[A-Za-z0-9+/]{43}=$/u,
     configSha256: /^[0-9a-f]{64}$/u,
   };
   for (const [field, pattern] of Object.entries(patterns)) {

@@ -20,7 +20,6 @@ CONTROL_URL=__CONTROL_URL__
 DEPLOYMENT_ID=__DEPLOYMENT_ID__
 BOOTSTRAP_TOKEN=__BOOTSTRAP_TOKEN__
 NODE_HOSTNAME=__NODE_HOSTNAME__
-ACME_EMAIL=__ACME_EMAIL__
 REALITY_SERVER_NAME=__REALITY_SERVER_NAME__
 ENABLE_UFW=__ENABLE_UFW__
 VERSION=1.14.0
@@ -92,23 +91,23 @@ VLESS_UUID=$(/usr/local/bin/sing-box generate uuid)
 REALITY_SHORT_ID=$(/usr/local/bin/sing-box generate rand --hex 8)
 HYSTERIA2_PASSWORD=$(openssl rand -base64 36 | tr -d '=+/\n' | head -c 43)
 AGENT_TOKEN=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
+HY2_CERT_TMP="$TMP_DIR/hysteria2.crt"
+HY2_KEY_TMP="$TMP_DIR/hysteria2.key"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -sha256 -nodes -days 3650 \
+  -subj "/CN=$NODE_HOSTNAME" -addext "subjectAltName=DNS:$NODE_HOSTNAME" \
+  -keyout "$HY2_KEY_TMP" -out "$HY2_CERT_TMP" >/dev/null 2>&1
+install -o root -g sing-box -m 0640 "$HY2_CERT_TMP" /etc/sing-box/hysteria2.crt
+install -o root -g sing-box -m 0640 "$HY2_KEY_TMP" /etc/sing-box/hysteria2.key
+HYSTERIA2_CERT_SHA256=$(openssl x509 -in /etc/sing-box/hysteria2.crt -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')
+HYSTERIA2_SPKI_SHA256=$(openssl x509 -in /etc/sing-box/hysteria2.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | openssl base64 -A)
 
-export NODE_HOSTNAME ACME_EMAIL REALITY_SERVER_NAME REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY VLESS_PORT
-export VLESS_UUID REALITY_SHORT_ID HYSTERIA2_PASSWORD AGENT_TOKEN DEPLOYMENT_ID CONTROL_URL VERSION
+export NODE_HOSTNAME REALITY_SERVER_NAME REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY VLESS_PORT
+export VLESS_UUID REALITY_SHORT_ID HYSTERIA2_PASSWORD HYSTERIA2_CERT_SHA256 HYSTERIA2_SPKI_SHA256
+export AGENT_TOKEN DEPLOYMENT_ID CONTROL_URL VERSION
 python3 - <<'PY'
 import json, os
 config = {
     "log": {"level": "warn", "timestamp": True},
-    "certificate_providers": [{
-        "type": "acme",
-        "tag": "hy2-acme",
-        "domain": [os.environ["NODE_HOSTNAME"]],
-        "data_directory": "/var/lib/sing-box/acme",
-        "default_server_name": os.environ["NODE_HOSTNAME"],
-        "email": os.environ["ACME_EMAIL"],
-        "provider": "letsencrypt",
-        "key_type": "p256"
-    }],
     "inbounds": [
         {
             "type": "vless",
@@ -145,7 +144,8 @@ config = {
             "tls": {
                 "enabled": True,
                 "min_version": "1.3",
-                "certificate_provider": "hy2-acme"
+                "certificate_path": "/etc/sing-box/hysteria2.crt",
+                "key_path": "/etc/sing-box/hysteria2.key"
             },
             "bbr_profile": "standard",
             "masquerade": {
@@ -211,15 +211,20 @@ UMask=0027
 WantedBy=multi-user.target
 UNIT
 
-if [ "$ENABLE_UFW" = "1" ]; then
+UFW_ACTIVE=0
+if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
+  UFW_ACTIVE=1
+fi
+if [ "$ENABLE_UFW" = "1" ] || [ "$UFW_ACTIVE" = "1" ]; then
   command -v ufw >/dev/null || fail "UFW was requested but is not installed"
   SSH_PORT=$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')
   [ -n "$SSH_PORT" ] || SSH_PORT=22
   ufw allow "$SSH_PORT/tcp"
-  ufw allow 80/tcp
   ufw allow "$VLESS_PORT/tcp"
   ufw allow 443/udp
-  ufw --force enable
+  if [ "$ENABLE_UFW" = "1" ] && [ "$UFW_ACTIVE" = "0" ]; then
+    ufw --force enable
+  fi
 fi
 
 systemctl daemon-reload
@@ -250,6 +255,8 @@ payload = {
     "realityPublicKey": os.environ["REALITY_PUBLIC_KEY"],
     "realityShortId": os.environ["REALITY_SHORT_ID"],
     "hysteria2Password": os.environ["HYSTERIA2_PASSWORD"],
+    "hysteria2CertSha256": os.environ["HYSTERIA2_CERT_SHA256"],
+    "hysteria2SpkiSha256": os.environ["HYSTERIA2_SPKI_SHA256"],
     "configSha256": os.environ["CONFIG_SHA"]
 }
 with open("/var/lib/v13-agent/complete.json", "w", encoding="utf-8") as handle:
@@ -338,7 +345,6 @@ printf '\nV13 bootstrap completed. The control plane is finalizing the private s
     .replaceAll("__DEPLOYMENT_ID__", shellQuote(deployment.id))
     .replaceAll("__BOOTSTRAP_TOKEN__", shellQuote(bootstrapToken))
     .replaceAll("__NODE_HOSTNAME__", shellQuote(deployment.node_hostname))
-    .replaceAll("__ACME_EMAIL__", shellQuote(deployment.acme_email))
     .replaceAll("__REALITY_SERVER_NAME__", shellQuote(deployment.reality_server_name))
     .replaceAll("__ENABLE_UFW__", shellQuote(deployment.enable_ufw === 1 ? "1" : "0"))
     .replaceAll("__AMD64_SHA__", shellQuote(SING_BOX_AMD64_SHA256))
@@ -399,6 +405,8 @@ export async function completeBootstrap(request: Request, env: Env): Promise<Res
     realityPublicKey: payload.realityPublicKey,
     realityShortId: payload.realityShortId,
     hysteria2Password: payload.hysteria2Password,
+    hysteria2CertSha256: payload.hysteria2CertSha256,
+    hysteria2SpkiSha256: payload.hysteria2SpkiSha256,
     nodeConfigSha256: payload.configSha256,
   };
   const encryptedBundle = await encryptJson(merged, env.TOKEN_ENCRYPTION_KEY, `deployment:${deployment.id}`);

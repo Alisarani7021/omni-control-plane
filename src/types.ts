@@ -76,6 +76,8 @@ export interface SecretBundle {
   realityPublicKey?: string;
   realityShortId?: string;
   hysteria2Password?: string;
+  hysteria2CertSha256?: string;
+  hysteria2SpkiSha256?: string;
   nodeConfigSha256?: string;
 }
 
@@ -88,6 +90,8 @@ export interface AgentCompletePayload {
   realityPublicKey: string;
   realityShortId: string;
   hysteria2Password: string;
+  hysteria2CertSha256: string;
+  hysteria2SpkiSha256: string;
   configSha256: string;
 }
 

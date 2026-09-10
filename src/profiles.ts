@@ -42,7 +42,14 @@ function baseClientConfig(outbound: Record<string, unknown>): Record<string, unk
 }
 
 export function buildReadyBundle(deployment: DeploymentRow, secrets: SecretBundle): DataPlaneBundle {
-  if (!secrets.vlessUuid || !secrets.realityPublicKey || !secrets.realityShortId || !secrets.hysteria2Password) {
+  if (
+    !secrets.vlessUuid
+    || !secrets.realityPublicKey
+    || !secrets.realityShortId
+    || !secrets.hysteria2Password
+    || !secrets.hysteria2CertSha256
+    || !secrets.hysteria2SpkiSha256
+  ) {
     throw new Error("Agent credentials are incomplete");
   }
   const label = deployment.worker_name;
@@ -58,7 +65,11 @@ export function buildReadyBundle(deployment: DeploymentRow, secrets: SecretBundl
     type: "tcp",
   });
   const vlessUri = `vless://${secrets.vlessUuid}@${deployment.node_hostname}:${vlessPort}?${vlessQuery.toString()}#${encodeURIComponent(`${label}-reality`)}`;
-  const hy2Query = new URLSearchParams({ sni: deployment.node_hostname, insecure: "0" });
+  const hy2Query = new URLSearchParams({
+    sni: deployment.node_hostname,
+    insecure: "1",
+    pinSHA256: secrets.hysteria2CertSha256,
+  });
   const hy2Uri = `hysteria2://${encodeURIComponent(secrets.hysteria2Password)}@${deployment.node_hostname}:443/?${hy2Query.toString()}#${encodeURIComponent(`${label}-hy2`)}`;
 
   const vlessOutbound = {
@@ -86,7 +97,12 @@ export function buildReadyBundle(deployment: DeploymentRow, secrets: SecretBundl
     server: deployment.node_hostname,
     server_port: 443,
     password: secrets.hysteria2Password,
-    tls: { enabled: true, server_name: deployment.node_hostname },
+    tls: {
+      enabled: true,
+      server_name: deployment.node_hostname,
+      insecure: true,
+      certificate_public_key_sha256: [secrets.hysteria2SpkiSha256],
+    },
     bbr_profile: "standard",
   };
   return {

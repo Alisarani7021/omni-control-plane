@@ -41,7 +41,7 @@ function bootstrapInstructions(env: Env, token: string, deploymentId: string): R
     expiresInSeconds: parsePositiveInt(env.BOOTSTRAP_TTL_SECONDS, 3600, 86_400),
     token,
     downloadCommand: `curl --fail --show-error --silent --proto '=https' --tlsv1.2 -H 'Authorization: Bearer ${token}' '${endpoint}' -o 'v13-bootstrap-${deploymentId}.sh'`,
-    inspectCommand: `if command -v less >/dev/null 2>&1; then less 'v13-bootstrap-${deploymentId}.sh'; else sed -n '1,320p' 'v13-bootstrap-${deploymentId}.sh'; fi`,
+    inspectCommand: `if command -v less >/dev/null 2>&1; then sed -E "s/^(BOOTSTRAP_TOKEN=).*/\\1'<redacted>'/" 'v13-bootstrap-${deploymentId}.sh' | less; else sed -E "s/^(BOOTSTRAP_TOKEN=).*/\\1'<redacted>'/" 'v13-bootstrap-${deploymentId}.sh' | sed -n '1,360p'; fi`,
     executeCommand: `sudo bash 'v13-bootstrap-${deploymentId}.sh'`,
     eraseCommand: `shred -u 'v13-bootstrap-${deploymentId}.sh' || rm -f 'v13-bootstrap-${deploymentId}.sh'`,
   };

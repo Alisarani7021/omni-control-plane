@@ -46,7 +46,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
 
   const rawLinkToken = randomToken(32);
   const tokenHash = await sha256(rawLinkToken);
-  const ttl = parsePositiveInt(env.LOGIN_LINK_TTL_SECONDS, 600, 3600);
+  const ttl = parsePositiveInt(env.LOGIN_LINK_TTL_SECONDS, 900, 3600);
   await env.DB.prepare(
     "INSERT INTO login_links (token_hash, tenant_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
   ).bind(tokenHash, tenant.id, addSecondsIso(ttl), now).run();

@@ -32,6 +32,8 @@ const secrets: SecretBundle = {
   realityPublicKey: "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0",
   realityShortId: "0123456789abcdef",
   hysteria2Password: "A_secure-password_0123456789abcdef",
+  hysteria2CertSha256: "a".repeat(64),
+  hysteria2SpkiSha256: `${"A".repeat(43)}=`,
 };
 
 describe("profile generation", () => {
@@ -47,6 +49,19 @@ describe("profile generation", () => {
     const serialized = JSON.stringify(buildReadyBundle(deployment, secrets));
     expect(serialized).not.toContain("private_key");
     expect(serialized).not.toContain("subscriptionToken");
+  });
+
+  it("pins the self-signed Hysteria2 certificate in URI and sing-box profile", () => {
+    const bundle = buildReadyBundle(deployment, secrets);
+    expect(bundle.uris[1]).toContain("insecure=1");
+    expect(bundle.uris[1]).toContain("pinSHA256=");
+    const hy2 = bundle.profiles.hysteria2 as {
+      outbounds: Array<{ tls: { insecure: boolean; certificate_public_key_sha256: string[] } }>;
+    };
+    expect(hy2.outbounds[0]?.tls).toEqual(expect.objectContaining({
+      insecure: true,
+      certificate_public_key_sha256: [secrets.hysteria2SpkiSha256],
+    }));
   });
 
   it("builds separate sing-box profiles with one real outbound each", () => {

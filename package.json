@@ -1,6 +1,6 @@
 {
   "name": "v13-control-plane",
-  "version": "13.1.3",
+  "version": "13.1.4",
   "private": true,
   "type": "module",
   "description": "Secure multi-tenant BYOC control plane for Cloudflare, Telegram and sing-box VPS nodes",

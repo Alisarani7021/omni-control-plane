@@ -1,6 +1,16 @@
-# V13.1.3 Release Manifest
+# V13.1.4 Release Manifest
 
 Build date: 2026-09-10
+
+## nginx coexistence and pinned Hysteria2 TLS
+
+- Hysteria2 now uses a locally generated P-256 self-signed certificate with certificate and SPKI SHA-256 pins; it no longer needs ACME listeners on TCP/80 or TCP/443 and therefore coexists with nginx without stopping it.
+- Certificate pins are validated by the control plane, stored in the encrypted deployment bundle and propagated to both the Hysteria2 URI and sing-box client profile.
+- When UFW is already active, Bootstrap adds only the detected SSH port, selected VLESS TCP port and Hysteria2 UDP/443 rule even when automatic UFW activation was not requested.
+- The script-review command redacts `BOOTSTRAP_TOKEN` before displaying the downloaded file.
+- One-time Telegram dashboard login links remain valid for 15 minutes (`LOGIN_LINK_TTL_SECONDS=900`).
+- One-time Telegram dashboard login links remain valid for 15 minutes (`LOGIN_LINK_TTL_SECONDS=900`).
+- One-time Telegram dashboard login links remain valid for 15 minutes (`LOGIN_LINK_TTL_SECONDS=900`).
 
 ## VPS bootstrap reliability hotfix
 
@@ -9,7 +19,7 @@ Build date: 2026-09-10
 - Service startup is bounded and fail-fast instead of waiting indefinitely inside `systemctl enable --now`; failures emit the latest unit logs.
 - Re-running an interrupted Bootstrap restarts sing-box so the reported credentials always match the active configuration.
 - Bootstrap safely probes local sockets: VLESS Reality uses TCP/443 when free and automatically falls back to TCP/8443 when an existing web server such as nginx owns 443; Hysteria2 remains on UDP/443.
-- The selected VLESS port is validated, stored inside the encrypted deployment bundle, propagated into every generated URI/client profile, and opened by the optional UFW policy.
+- The selected VLESS port is validated, stored inside the encrypted deployment bundle and propagated into every generated URI/client profile.
 - Server listeners are IPv4-bound because provisioning requires a public IPv4 address; this avoids failures on hosts with IPv6 disabled.
 - Script review falls back to `sed` on minimal Ubuntu images where `less` is not installed.
 - Revocation marks the deployment before starting its Workflow, removing a race that could leave a completed revocation displayed as `revoking`.
@@ -38,7 +48,7 @@ Build date: 2026-09-10
 - Security preflight: passed
 - Oxlint: 0 warnings and 0 errors
 - TypeScript strict typecheck: passed
-- Vitest: 17/17 tests passed across 5 files in the production Codespace
+- Vitest: 23/23 tests passed across 5 files in the production Codespace
 - npm audit: 0 known vulnerabilities
 - Wrangler 4.130.0 dry-run build under Node.js 22: passed
 - D1 clean local migration: both migrations applied; auth/resource columns and expiry index verified

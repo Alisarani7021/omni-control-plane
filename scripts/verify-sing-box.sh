@@ -21,8 +21,25 @@ printf '%s  %s\n' "$EXPECTED_SHA" "$ARCHIVE" | sha256sum --check --status
 tar -xzf "$ARCHIVE" -C "$TMP_DIR"
 BIN=$(find "$TMP_DIR" -type f -name sing-box -perm -u+x | head -n 1)
 "$BIN" version | grep -F "sing-box version $VERSION" >/dev/null
+CERT="$TMP_DIR/hysteria2.crt"
+KEY="$TMP_DIR/hysteria2.key"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -sha256 -nodes -days 1 \
+  -subj '/CN=node.example.com' -addext 'subjectAltName=DNS:node.example.com' \
+  -keyout "$KEY" -out "$CERT" >/dev/null 2>&1
 for config in "$ROOT"/tests/fixtures/*-sing-box-1.14.json; do
   printf 'Checking %s\n' "$(basename "$config")"
-  "$BIN" check -c "$config"
+  if grep -q '__CERT_PATH__' "$config"; then
+    rendered="$TMP_DIR/$(basename "$config")"
+    python3 - "$config" "$rendered" "$CERT" "$KEY" <<'PY'
+import pathlib, sys
+source, destination, cert, key = map(pathlib.Path, sys.argv[1:])
+text = source.read_text(encoding="utf-8")
+text = text.replace("__CERT_PATH__", str(cert)).replace("__KEY_PATH__", str(key))
+destination.write_text(text, encoding="utf-8")
+PY
+    "$BIN" check -c "$rendered"
+  else
+    "$BIN" check -c "$config"
+  fi
 done
 printf 'All sing-box %s fixtures are valid.\n' "$VERSION"
