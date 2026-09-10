@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   OMNI_MENU_TEXT_SATELLITE,
+  faErrorMessage,
   formatDeploymentStatus,
   handleTelegramWebhook,
   isV13TelegramUpdate,
   omniMainMenuKeyboard,
   parseBotCommand,
 } from "../src/telegram";
+import { HttpError } from "../src/http";
 import type { Env, TelegramUpdate } from "../src/types";
 
 const BOT = "OmniAiGateBot";
@@ -15,7 +17,8 @@ const SECRET = "test-webhook-secret";
 interface FakeDbOptions {
   updateChanges?: number;
   rateLimited?: boolean;
-  deployments?: Array<{ worker_name: string; status: string; node_hostname: string; updated_at: string }>;
+  deployments?: Array<Record<string, string>>;
+  wizardRow?: { flow: string; step: string; state_json: string; expires_at: string } | null;
 }
 
 function createEnv(options: FakeDbOptions = {}): { env: Env; statements: string[] } {
@@ -35,7 +38,8 @@ function createEnv(options: FakeDbOptions = {}): { env: Env; statements: string[
                 const now = Math.floor(Date.now() / 1000);
                 return { window_started_at: now - (now % 60), hits: options.rateLimited ? 99 : 1 } as unknown as T;
               }
-              if (sql.includes("FROM tenants")) return { id: "tenant-1" } as unknown as T;
+              if (sql.includes("FROM tenants")) return { id: "tenant-1", display_name: "Ali" } as unknown as T;
+              if (sql.includes("FROM telegram_wizards")) return (options.wizardRow ?? null) as unknown as T;
               return null;
             },
             all: async <T>() => ({ results: (options.deployments ?? []) as unknown as T[] }),
@@ -162,13 +166,17 @@ describe("omni telegram webhook", () => {
     expect(payload.reply_markup.inline_keyboard.flat().map((button) => button.callback_data)).toContain("v13:login");
   });
 
-  it("issues a one-time login URL for /start v13 and /panel", async () => {
+  it("issues in-Telegram and browser login URLs for /start v13 and /panel", async () => {
     for (const text of ["/start v13", "/panel"]) {
       const { env } = createEnv();
       const response = await handleTelegramWebhook(webhookRequest(privateMessage(text)), env);
-      const payload = await response.json() as { reply_markup: { inline_keyboard: Array<Array<{ url?: string }>> } };
-      const url = payload.reply_markup.inline_keyboard[0]?.[0]?.url ?? "";
-      expect(url.startsWith("https://control.example.com/login?t=")).toBe(true);
+      const payload = await response.json() as {
+        reply_markup: { inline_keyboard: Array<Array<{ url?: string; web_app?: { url: string } }>> };
+      };
+      const rows = payload.reply_markup.inline_keyboard;
+      expect(rows[0]?.[0]?.web_app?.url?.startsWith("https://control.example.com/login?t=")).toBe(true);
+      expect(rows[1]?.[0]?.url?.startsWith("https://control.example.com/login?t=")).toBe(true);
+      expect(rows[0]?.[0]?.web_app?.url).not.toBe(rows[1]?.[0]?.url);
     }
   });
 
@@ -227,8 +235,11 @@ describe("omni telegram webhook", () => {
       "https://api.telegram.org/bottest-bot-token/answerCallbackQuery",
       "https://api.telegram.org/bottest-bot-token/sendMessage",
     ]);
-    const keyboard = calls[1]?.body.reply_markup as { inline_keyboard: Array<Array<{ url?: string }>> };
-    expect(keyboard.inline_keyboard[0]?.[0]?.url?.startsWith("https://control.example.com/login?t=")).toBe(true);
+    const keyboard = calls[1]?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ url?: string; web_app?: { url: string } }>>;
+    };
+    expect(keyboard.inline_keyboard[0]?.[0]?.web_app?.url?.startsWith("https://control.example.com/login?t=")).toBe(true);
+    expect(keyboard.inline_keyboard[1]?.[0]?.url?.startsWith("https://control.example.com/login?t=")).toBe(true);
   });
 
   it("handles the status callback by editing the menu message", async () => {
@@ -246,5 +257,86 @@ describe("omni telegram webhook", () => {
     const response = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:status")), env);
     expect(await response.json()).toEqual({ ok: true });
     expect(methods).toEqual(["answerCallbackQuery", "editMessageText"]);
+  });
+
+  it("routes wizard callbacks and /cancel to the V13 section", () => {
+    expect(isV13TelegramUpdate(callbackQuery("wiz:conn:11111111-1111-4111-8111-111111111111"), BOT)).toBe(true);
+    expect(isV13TelegramUpdate(privateMessage("/cancel"), BOT)).toBe(true);
+  });
+
+  it("cancels an in-progress wizard with /cancel", async () => {
+    const { env, statements } = createEnv();
+    const response = await handleTelegramWebhook(webhookRequest(privateMessage("/cancel")), env);
+    const payload = await response.json() as { text: string };
+    expect(payload.text).toContain("لغو شد");
+    expect(statements.some((sql) => sql.includes("DELETE FROM telegram_wizards"))).toBe(true);
+  });
+
+  it("lists deployments from the native menu text", async () => {
+    const { env } = createEnv({
+      deployments: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        worker_name: "v13-node",
+        status: "ready",
+        node_hostname: "node.example.com",
+        updated_at: "2026-09-10T00:00:00.000Z",
+      }],
+    });
+    const response = await handleTelegramWebhook(webhookRequest(privateMessage("📦 استقرارها")), env);
+    const payload = await response.json() as {
+      reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    };
+    const callbacks = payload.reply_markup.inline_keyboard.flat().map((button) => button.callback_data);
+    expect(callbacks).toContain("v13:dep:11111111-1111-4111-8111-111111111111");
+    expect(callbacks).toContain("v13:dep:new");
+  });
+
+  it("feeds free text into the active wizard step", async () => {
+    const { env } = createEnv({
+      wizardRow: {
+        flow: "deploy",
+        step: "workerName",
+        state_json: JSON.stringify({
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          connectionName: "example.com",
+          accountId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          accountName: "Example",
+          zoneId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          zoneName: "example.com",
+        }),
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    const response = await handleTelegramWebhook(webhookRequest(privateMessage("v13-test")), env);
+    const payload = await response.json() as { text: string };
+    expect(payload.text).toContain("قدم ۲");
+    expect(payload.text).toContain("example.com");
+  });
+
+  it("rejects invalid wizard input and stays on the same step", async () => {
+    const { env } = createEnv({
+      wizardRow: {
+        flow: "deploy",
+        step: "workerName",
+        state_json: JSON.stringify({
+          connectionId: "11111111-1111-4111-8111-111111111111",
+          accountId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          zoneId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          zoneName: "example.com",
+        }),
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    const response = await handleTelegramWebhook(webhookRequest(privateMessage("BAD NAME!!")), env);
+    const payload = await response.json() as { text: string };
+    expect(payload.text).toContain("معتبر نیست");
+    expect(payload.text).toContain("قدم ۱");
+  });
+
+  it("maps worker errors to Persian, with reconnect as a special case", () => {
+    expect(faErrorMessage(new HttpError(409, "deployment_resource_conflict", "taken"))).toContain("قبلاً استفاده شده");
+    expect(faErrorMessage(new HttpError(409, "cloudflare_reconnect_required", "reconnect"))).toBeNull();
+    expect(faErrorMessage(new HttpError(409, "cloudflare_connection_busy", "busy"))).toContain("استقرار فعال");
+    expect(faErrorMessage(new Error("boom"))).toContain("خطای موقت");
   });
 });

@@ -66,7 +66,7 @@ npx wrangler d1 export v13-control-plane --remote --output backups/pre-api-token
 npx wrangler d1 migrations apply v13-control-plane --remote
 ```
 
-باید `0001_init.sql` و `0002_temporary_api_token.sql` applied باشند. backup را عمومی یا commit نکنید.
+باید هر سه migration (`0001_init.sql` تا `0003_telegram_wizards.sql`) applied باشند. backup را عمومی یا commit نکنید.
 
 ## ۴. Worker Secretها
 

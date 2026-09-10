@@ -1,6 +1,31 @@
+import {
+  botConnectionBoundary,
+  botCreateDeployment,
+  botDisconnectConnection,
+  botGetDeployment,
+  botListConnections,
+  botListDeployments,
+  botPrincipal,
+  botRetryDeployment,
+  botRevokeDeployment,
+  botRotateBootstrap,
+  botRotateSubscription,
+  type BotBootstrap,
+  type BotConnectionSummary,
+  type BotDeploymentSummary,
+} from "./bot-actions";
+import { applySniDefault, applyUfwChoice, beginDeployWizard, cancelKeyboard, clearWizard, loadWizard, processWizardText } from "./telegram-wizard";
 import { audit, rateLimit } from "./db";
 import { HttpError, json, readJson } from "./http";
-import { addSecondsIso, constantTimeEqual, nowIso, parsePositiveInt, randomToken, sha256 } from "./security";
+import {
+  addSecondsIso,
+  constantTimeEqual,
+  escapeHtml,
+  nowIso,
+  parsePositiveInt,
+  randomToken,
+  sha256,
+} from "./security";
 import type {
   Env,
   TelegramCallbackQuery,
@@ -18,7 +43,7 @@ const TELEGRAM_RATE_LIMIT = 12;
 const TELEGRAM_RATE_WINDOW_SECONDS = 60;
 
 /** Commands owned by the V13 / Omni-private section of the bot. */
-export const V13_COMMANDS = ["start", "panel", "status", "help"] as const;
+export const V13_COMMANDS = ["start", "panel", "status", "help", "cancel"] as const;
 export type V13Command = (typeof V13_COMMANDS)[number];
 
 /** Deep-link arguments (`/start <arg>`) that open the V13 private environment directly. */
@@ -26,11 +51,15 @@ export const V13_DEEP_LINK_ARGS: ReadonlySet<string> = new Set(["v13", "panel", 
 
 /** Plain-text menu labels accepted as equivalents of the inline buttons. */
 export const OMNI_MENU_TEXT_SATELLITE = "🛰️ محیط اختصاصی V13";
+export const OMNI_MENU_TEXT_DEPS = "📦 استقرارها";
+export const OMNI_MENU_TEXT_CONNS = "🔌 اتصال Cloudflare";
 export const OMNI_MENU_TEXT_STATUS = "📊 وضعیت استقرارها";
 export const OMNI_MENU_TEXT_HELP = "❓ راهنما";
 export const OMNI_MENU_TEXT_HOME = "🏠 منوی اصلی";
 export const OMNI_MENU_TEXTS: ReadonlySet<string> = new Set([
   OMNI_MENU_TEXT_SATELLITE,
+  OMNI_MENU_TEXT_DEPS,
+  OMNI_MENU_TEXT_CONNS,
   OMNI_MENU_TEXT_STATUS,
   OMNI_MENU_TEXT_HELP,
   OMNI_MENU_TEXT_HOME,
@@ -47,6 +76,10 @@ const STATUS_FA: Record<string, string> = {
   failed: "ناموفق ❌",
   revoked: "باطل‌شده",
 };
+
+export function faDeploymentStatus(status: string): string {
+  return STATUS_FA[status] ?? status;
+}
 
 export interface ParsedBotCommand {
   command: string;
@@ -73,7 +106,7 @@ export function parseBotCommand(text: string | undefined, botUsername: string): 
  */
 export function isV13TelegramUpdate(update: TelegramUpdate, botUsername: string): boolean {
   const data = update.callback_query?.data ?? "";
-  if (data.startsWith("v13:") || data.startsWith("omni:")) return true;
+  if (data.startsWith("v13:") || data.startsWith("omni:") || data.startsWith("wiz:")) return true;
   const text = update.message?.text ?? "";
   const parsed = parseBotCommand(text, botUsername);
   if (parsed && (V13_COMMANDS as readonly string[]).includes(parsed.command)) return true;
@@ -81,13 +114,20 @@ export function isV13TelegramUpdate(update: TelegramUpdate, botUsername: string)
   return false;
 }
 
-/** Main Omni menu: one dedicated button enters the V13 private environment. */
+/**
+ * Main Omni menu. The private-environment entry stays as its own separate
+ * section; full worker management lives in the sections below it.
+ */
 export function omniMainMenuKeyboard(): TelegramInlineKeyboard {
   return {
     inline_keyboard: [
       [{ text: "🛰️ ورود به محیط اختصاصی V13", callback_data: "v13:login" }],
       [
-        { text: "📊 وضعیت استقرارها", callback_data: "v13:status" },
+        { text: "📦 استقرارها", callback_data: "v13:deps" },
+        { text: "🔌 اتصال Cloudflare", callback_data: "v13:conns" },
+      ],
+      [
+        { text: "📊 وضعیت", callback_data: "v13:status" },
         { text: "❓ راهنما", callback_data: "v13:help" },
       ],
     ],
@@ -104,9 +144,8 @@ export function omniWelcomeText(): string {
   return [
     "به دروازهٔ Omni × V13 خوش آمدید 👋",
     "",
-    "🛰️ «محیط اختصاصی V13» کنترل‌پلین امن زیرساخت شماست: اتصال موقت Cloudflare، ساخت نود واقعی (VLESS + Hysteria2) و اشتراک خصوصی.",
-    "",
-    "برای ورود، دکمهٔ زیر را بزنید — یک لینک یک‌بارمصرف برای شما ساخته می‌شود و با همان دکمه وارد محیط می‌شوید.",
+    "🛰️ «محیط اختصاصی V13» پنل کامل شماست — جدا و امن.",
+    "📦 از همین‌جا هم می‌توانید استقرار بسازید، وضعیت ببینید، تلاش مجدد کنید، بوت‌استرپ بگیرید و اتصال Cloudflare را مدیریت کنید.",
     "",
     "⚠️ هیچ API Token یا رمز سروری را در چت ارسال نکنید.",
   ].join("\n");
@@ -116,22 +155,20 @@ export function omniLoginText(ttlMinutes: number): string {
   return [
     "🔐 لینک یک‌بارمصرف محیط اختصاصی آماده است.",
     "",
-    `این لینک ${ttlMinutes} دقیقه اعتبار دارد و بعد از اولین استفاده باطل می‌شود.`,
-    "دکمهٔ زیر را بزنید تا وارد محیط شوید 👇",
+    `هر لینک ${ttlMinutes} دقیقه اعتبار دارد و بعد از اولین استفاده باطل می‌شود.`,
+    "«در تلگرام» پنل را همین‌جا باز می‌کند؛ «در مرورگر» در مرورگر گوشی.",
   ].join("\n");
 }
 
 export function omniHelpText(): string {
   return [
-    "❓ راهنمای محیط اختصاصی V13",
+    "❓ راهنمای ربات V13",
     "",
-    "/start — منوی اصلی Omni",
-    "/panel — دریافت لینک ورود به محیط اختصاصی",
-    "/status — وضعیت استقرارها (بدون نمایش secret)",
-    "/help — همین راهنما",
+    "🛰️ ورود به محیط اختصاصی: پنل کامل (مرورگر یا داخل تلگرام)",
+    "📦 استقرارها: ساخت قدم‌به‌قدم، جزئیات، تلاش مجدد، ابطال، بوت‌استرپ، اشتراک‌ها",
+    "🔌 اتصال Cloudflare: مشاهده و قطع اتصال (ساخت اتصال جدید فقط در پنل امن)",
     "",
-    "ورود همیشه با لینک یک‌بارمصرف و کوتاه‌عمر انجام می‌شود.",
-    "Cloudflare API Token را فقط داخل فرم HTTPS پنل وارد کنید، هرگز در چت.",
+    "/start — منوی اصلی · /panel — ورود · /status — وضعیت · /cancel — لغو فرایند نیمه‌کاره",
   ].join("\n");
 }
 
@@ -162,14 +199,44 @@ export function formatDeploymentStatus(rows: DeploymentStatusRow[]): string {
       "از «ورود به محیط اختصاصی V13» وارد شوید و اولین نود واقعی را بسازید.",
     ].join("\n");
   }
-  const lines = rows.map((row) => {
-    const statusFa = STATUS_FA[row.status] ?? row.status;
-    return `• ${row.worker_name} — ${statusFa}\n  ${row.node_hostname}`;
-  });
-  return ["📊 وضعیت استقرارهای شما:", "", ...lines, "", "جزئیات امن و اشتراک‌ها فقط داخل پنل نمایش داده می‌شوند."].join("\n");
+  const lines = rows.map((row) => `• ${row.worker_name} — ${faDeploymentStatus(row.status)}\n  ${row.node_hostname}`);
+  return ["📊 وضعیت استقرارهای شما:", "", ...lines, "", "جزئیات و عملیات از بخش «📦 استقرارها» در دسترس است."].join("\n");
 }
 
-async function ensureTenant(env: Env, from: TelegramFrom): Promise<{ id: string }> {
+/** Map worker errors to short Persian messages. Returns null when the caller must show the reconnect prompt. */
+export function faErrorMessage(error: unknown): string | null {
+  if (error instanceof HttpError) {
+    switch (error.code) {
+      case "deployment_resource_conflict":
+        return "این نام Worker یا دامنه قبلاً استفاده شده است؛ یکی دیگر انتخاب کنید.";
+      case "cloudflare_reconnect_required":
+        return null;
+      case "invalid_deployment_state":
+        return "این عملیات در وضعیت فعلی استقرار مجاز نیست.";
+      case "invalid_connection":
+        return "اتصال Cloudflare معتبر نیست یا منقضی شده است.";
+      case "zone_mismatch":
+        return "Zone در حساب انتخاب‌شده فعال نیست.";
+      case "hostname_zone_mismatch":
+        return "هر دو زیردامنه باید متعلق به همان Zone باشند.";
+      case "invalid_reality_target":
+        return "مقصد Reality نباید خودِ همین نود باشد.";
+      case "cloudflare_resource_mismatch":
+        return "منبع انتخاب‌شده خارج از محدودهٔ این اتصال است.";
+      case "cloudflare_connection_busy":
+        return "این اتصال هنوز توسط یک استقرار فعال لازم است؛ اول آن را تمام یا باطل کنید.";
+      case "deployment_not_found":
+        return "استقرار پیدا نشد.";
+      case "invalid_input":
+        return "ورودی معتبر نیست؛ دوباره بررسی کنید.";
+      default:
+        return "خطای موقت؛ کمی بعد دوباره تلاش کنید.";
+    }
+  }
+  return "خطای موقت؛ کمی بعد دوباره تلاش کنید.";
+}
+
+async function ensureTenant(env: Env, from: TelegramFrom): Promise<{ id: string; displayName: string }> {
   const now = nowIso();
   const tenantId = crypto.randomUUID();
   const displayName = [from.first_name, from.last_name].filter(Boolean).join(" ").slice(0, 120);
@@ -182,10 +249,10 @@ async function ensureTenant(env: Env, from: TelegramFrom): Promise<{ id: string 
        locale = excluded.locale,
        updated_at = excluded.updated_at`,
   ).bind(tenantId, String(from.id), from.username ?? null, displayName, from.language_code ?? null, now, now).run();
-  const tenant = await env.DB.prepare("SELECT id FROM tenants WHERE telegram_user_id = ?")
-    .bind(String(from.id)).first<{ id: string }>();
+  const tenant = await env.DB.prepare("SELECT id, display_name FROM tenants WHERE telegram_user_id = ?")
+    .bind(String(from.id)).first<{ id: string; display_name: string }>();
   if (!tenant) throw new Error("Tenant upsert failed");
-  return tenant;
+  return { id: tenant.id, displayName: tenant.display_name };
 }
 
 async function issueLoginLink(env: Env, tenantId: string): Promise<{ loginUrl: string; ttlMinutes: number }> {
@@ -197,6 +264,35 @@ async function issueLoginLink(env: Env, tenantId: string): Promise<{ loginUrl: s
   ).bind(tokenHash, tenantId, addSecondsIso(ttl), nowIso()).run();
   const loginUrl = `${new URL(env.PUBLIC_BASE_URL).origin}/login?t=${encodeURIComponent(rawLinkToken)}`;
   return { loginUrl, ttlMinutes: Math.max(1, Math.floor(ttl / 60)) };
+}
+
+async function issueLoginPair(
+  env: Env,
+  tenantId: string,
+  telegramUserId: string,
+): Promise<{ appUrl: string; webUrl: string; ttlMinutes: number }> {
+  const first = await issueLoginLink(env, tenantId);
+  const second = await issueLoginLink(env, tenantId);
+  for (let index = 0; index < 2; index += 1) {
+    await audit(env, {
+      tenantId,
+      actorType: "telegram",
+      actorId: telegramUserId,
+      action: "login_link.create",
+      outcome: "success",
+    });
+  }
+  return { appUrl: first.loginUrl, webUrl: second.loginUrl, ttlMinutes: first.ttlMinutes };
+}
+
+function loginKeyboard(appUrl: string, webUrl: string): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [
+      [{ text: "🛰️ باز کردن در تلگرام", web_app: { url: appUrl } }],
+      [{ text: "🌐 باز کردن در مرورگر", url: webUrl }],
+      [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+    ],
+  };
 }
 
 async function listRecentDeployments(env: Env, tenantId: string): Promise<DeploymentStatusRow[]> {
@@ -216,11 +312,12 @@ async function telegramApi(env: Env, method: string, payload: Record<string, unk
   if (!response.ok || !result.ok) throw new Error(`Telegram API request failed: ${response.status} ${method}`);
 }
 
-function webhookSend(chatId: number, text: string, replyMarkup?: TelegramInlineKeyboard): Response {
+function webhookSend(chatId: number, text: string, replyMarkup?: TelegramInlineKeyboard, html = false): Response {
   return json({
     method: "sendMessage",
     chat_id: chatId,
     text,
+    ...(html ? { parse_mode: "HTML" } : {}),
     protect_content: true,
     disable_web_page_preview: true,
     ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
@@ -251,39 +348,209 @@ async function forwardToOmni(env: Env, update: TelegramUpdate): Promise<boolean>
   }
 }
 
+// ---------------------------------------------------------------------------
+// Renderers shared by message commands and callback buttons.
+// ---------------------------------------------------------------------------
+
+interface RenderedView {
+  text: string;
+  keyboard: TelegramInlineKeyboard;
+  html: boolean;
+}
+
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+async function renderDepsList(env: Env, tenantId: string, displayName: string, telegramUserId: string): Promise<RenderedView> {
+  const principal = botPrincipal(tenantId, telegramUserId, displayName);
+  const deployments: BotDeploymentSummary[] = (await botListDeployments(env, principal)).slice(0, 10);
+  if (deployments.length === 0) {
+    return {
+      text: "📦 هنوز استقراری ندارید. با دکمهٔ زیر اولین نود واقعی را بسازید 👇",
+      keyboard: {
+        inline_keyboard: [
+          [{ text: "➕ ساخت استقرار جدید", callback_data: "v13:dep:new" }],
+          [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+        ],
+      },
+      html: false,
+    };
+  }
+  const rows = deployments.map((deployment) => ([
+    { text: `${deployment.worker_name} — ${faDeploymentStatus(deployment.status)}`.slice(0, 60), callback_data: `v13:dep:${deployment.id}` },
+  ]));
+  rows.push([{ text: "➕ ساخت استقرار جدید", callback_data: "v13:dep:new" }]);
+  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
+  return { text: "📦 یک استقرار را انتخاب کنید:", keyboard: { inline_keyboard: rows }, html: false };
+}
+
+async function renderDepDetail(
+  env: Env,
+  tenantId: string,
+  displayName: string,
+  telegramUserId: string,
+  deploymentId: string,
+): Promise<RenderedView> {
+  const principal = botPrincipal(tenantId, telegramUserId, displayName);
+  const { deployment } = await botGetDeployment(env, principal, deploymentId);
+  const status = deployment.status;
+  const updated = new Date(deployment.updatedAt).toLocaleString("fa-IR");
+  const text = [
+    `📦 <b>${escapeHtml(deployment.workerName)}</b> — ${escapeHtml(faDeploymentStatus(status))}`,
+    "",
+    `🖥️ اشتراک: ${escapeHtml(deployment.workerHostname)}`,
+    `📡 نود: ${escapeHtml(deployment.nodeHostname)}`,
+    `🌐 IP: ${escapeHtml(deployment.vpsIpv4)}`,
+    `🕐 به‌روزرسانی: ${escapeHtml(updated)}${deployment.lastSeenAt ? `\n💚 آخرین گزارش سلامت: ${escapeHtml(new Date(deployment.lastSeenAt).toLocaleString("fa-IR"))}` : ""}`,
+  ].join("\n");
+  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
+  if (status === "ready") {
+    rows.push([
+      { text: "🔗 اشتراک‌ها", callback_data: `v13:dep-subs:${deployment.id}` },
+      { text: "🔁 چرخش اشتراک", callback_data: `v13:dep-subrot:${deployment.id}` },
+    ]);
+  }
+  if (["queued", "preparing", "awaiting_agent", "failed"].includes(status)) {
+    rows.push([{ text: "🔑 دستورهای بوت‌استرپ", callback_data: `v13:dep-boot:${deployment.id}` }]);
+  }
+  if (["agent_ready", "failed"].includes(status)) {
+    rows.push([{ text: "🔄 تلاش مجدد", callback_data: `v13:dep-retry:${deployment.id}` }]);
+  }
+  if (!["revoked", "revoking"].includes(status)) {
+    rows.push([{ text: "🛑 ابطال استقرار", callback_data: `v13:dep-revoke:${deployment.id}` }]);
+  }
+  rows.push([
+    { text: "🔄 تازه‌سازی", callback_data: `v13:dep:${deployment.id}` },
+    { text: "📦 لیست", callback_data: "v13:deps" },
+  ]);
+  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
+  return { text, keyboard: { inline_keyboard: rows }, html: true };
+}
+
+async function renderConnsList(
+  env: Env,
+  tenantId: string,
+  displayName: string,
+  telegramUserId: string,
+): Promise<RenderedView> {
+  const principal = botPrincipal(tenantId, telegramUserId, displayName);
+  const connections: BotConnectionSummary[] = await botListConnections(env, principal);
+  const homeRow = [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }];
+  if (connections.length === 0) {
+    return {
+      text: "🔌 اتصال فعالی ندارید. با دکمهٔ زیر وارد پنل شوید و Scoped API Token را فقط در فرم امن وارد کنید 👇",
+      keyboard: { inline_keyboard: [[{ text: "➕ ساخت اتصال جدید", callback_data: "v13:conn-new" }], homeRow] },
+      html: false,
+    };
+  }
+  const lines = connections.map((connection) => {
+    const zone = connection.resource_zone_name ?? "?";
+    const expires = connection.expires_at ? new Date(connection.expires_at).toLocaleString("fa-IR") : "نامشخص";
+    return `• ${zone} — انقضای نگهداری: ${expires}`;
+  });
+  const rows = connections.map((connection) => ([
+    { text: `🗑️ قطع: ${(connection.resource_zone_name ?? shortId(connection.id)).slice(0, 24)}`, callback_data: `v13:conn-disc:${connection.id}` },
+  ]));
+  rows.push([{ text: "➕ اتصال جدید", callback_data: "v13:conn-new" }]);
+  rows.push(homeRow);
+  return { text: ["🔌 اتصال‌های فعال:", "", ...lines].join("\n"), keyboard: { inline_keyboard: rows }, html: false };
+}
+
+async function renderConnectPrompt(env: Env, tenantId: string, telegramUserId: string, intro: string): Promise<RenderedView> {
+  const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenantId, telegramUserId);
+  return {
+    text: [`${intro}`, "", omniLoginText(ttlMinutes), "", "توکن Cloudflare را فقط در فرم امن پنل وارد کنید، هرگز در چت."].join("\n"),
+    keyboard: loginKeyboard(appUrl, webUrl),
+    html: false,
+  };
+}
+
+function renderBootstrapMessage(bootstrap: BotBootstrap, workerName: string): { text: string; keyboard: TelegramInlineKeyboard } {
+  const minutes = Math.max(1, Math.round(bootstrap.expiresInSeconds / 60));
+  const text = [
+    `🔑 دستورهای بوت‌استرپ <b>${escapeHtml(workerName)}</b> (${minutes} دقیقه اعتبار)`,
+    "",
+    "۱) دریافت:",
+    `<pre>${escapeHtml(bootstrap.downloadCommand)}</pre>`,
+    "۲) بررسی:",
+    `<pre>${escapeHtml(bootstrap.inspectCommand)}</pre>`,
+    "۳) اجرا:",
+    `<pre>${escapeHtml(bootstrap.executeCommand)}</pre>`,
+    "۴) حذف فایل:",
+    `<pre>${escapeHtml(bootstrap.eraseCommand)}</pre>`,
+    "",
+    "⚠️ این پیام حاوی توکن یک‌بارمصرف است؛ بعد از اجرا با دکمهٔ زیر حذفش کنید.",
+  ].join("\n");
+  return {
+    text,
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "🧨 حذف این پیام", callback_data: "v13:delmsg" }],
+        [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+      ],
+    },
+  };
+}
+
+function renderSubscriptionsMessage(subscriptions: Record<string, string>, workerName: string, rotated: boolean): { text: string; keyboard: TelegramInlineKeyboard } {
+  const entries: Array<[string, string]> = [
+    ["🔗 اشتراک اصلی", subscriptions.uri ?? ""],
+    ["📦 پروفایل VLESS", subscriptions.singBoxVless ?? ""],
+    ["📦 پروفایل Hysteria2", subscriptions.singBoxHysteria2 ?? ""],
+  ];
+  const blocks = entries.filter(([, url]) => url).map(([label, url]) => `${label}:\n<pre>${escapeHtml(url)}</pre>`);
+  const text = [
+    `${rotated ? "🔁 اشتراک‌های جدید" : "🔗 اشتراک‌های"} <b>${escapeHtml(workerName)}</b>${rotated ? " (قبلی‌ها از کار افتادند)" : ""}`,
+    "",
+    ...blocks,
+    "",
+    "⚠️ این لینک‌ها مثل رمز هستند؛ برای کسی نفرستید و بعد از کپی، پیام را حذف کنید.",
+  ].join("\n");
+  return {
+    text,
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "🧨 حذف این پیام", callback_data: "v13:delmsg" }],
+        [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+      ],
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Message updates.
+// ---------------------------------------------------------------------------
+
 async function sendLoginLinkMessage(
   env: Env,
   chatId: number,
   tenantId: string,
   telegramUserId: string,
 ): Promise<Response> {
-  const { loginUrl, ttlMinutes } = await issueLoginLink(env, tenantId);
-  await audit(env, {
-    tenantId,
-    actorType: "telegram",
-    actorId: telegramUserId,
-    action: "login_link.create",
-    outcome: "success",
-  });
-  return webhookSend(chatId, omniLoginText(ttlMinutes), {
-    inline_keyboard: [
-      [{ text: "🛰️ ورود به محیط اختصاصی", url: loginUrl }],
-      [{ text: OMNI_MENU_TEXT_STATUS, callback_data: "v13:status" }],
-    ],
-  });
+  const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenantId, telegramUserId);
+  return webhookSend(chatId, omniLoginText(ttlMinutes), loginKeyboard(appUrl, webUrl));
 }
 
 async function sendStatusMessage(env: Env, chatId: number, tenantId: string): Promise<Response> {
   const rows = await listRecentDeployments(env, tenantId);
-  const keyboard: TelegramInlineKeyboard = rows.length === 0
-    ? omniMainMenuKeyboard()
-    : {
-      inline_keyboard: [
-        [{ text: "🛰️ ورود به محیط اختصاصی V13", callback_data: "v13:login" }],
-        [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
-      ],
-    };
-  return webhookSend(chatId, formatDeploymentStatus(rows), keyboard);
+  return webhookSend(chatId, formatDeploymentStatus(rows), omniMainMenuKeyboard());
+}
+
+async function sendRendered(chatId: number, view: RenderedView): Promise<Response> {
+  return webhookSend(chatId, view.text, view.keyboard, view.html);
+}
+
+async function handleErrorView(
+  env: Env,
+  chatId: number,
+  tenantId: string,
+  telegramUserId: string,
+  error: unknown,
+): Promise<Response> {
+  const message = faErrorMessage(error);
+  if (message) return webhookSend(chatId, message, omniBackMenuKeyboard());
+  return sendRendered(chatId, await renderConnectPrompt(env, tenantId, telegramUserId, "🔌 اتصال Cloudflare منقضی شده؛ اول دوباره وصل شوید."));
 }
 
 async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
@@ -297,6 +564,7 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
     return webhookSend(message.chat.id, "درخواست‌ها خیلی سریع ارسال شدند. لطفاً یک دقیقه بعد دوباره تلاش کنید.");
   }
   const tenant = await ensureTenant(env, user);
+  const telegramUserId = String(user.id);
   const text = (message.text ?? "").trim();
   const parsed = parseBotCommand(text, env.BOT_USERNAME);
 
@@ -309,16 +577,20 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
           return webhookSend(message.chat.id, omniWelcomeText(), omniMainMenuKeyboard());
         }
         if (V13_DEEP_LINK_ARGS.has(arg)) {
-          return sendLoginLinkMessage(env, message.chat.id, tenant.id, String(user.id));
+          return sendLoginLinkMessage(env, message.chat.id, tenant.id, telegramUserId);
         }
         return webhookSend(message.chat.id, omniWelcomeText(), omniMainMenuKeyboard());
       }
       case "panel":
-        return sendLoginLinkMessage(env, message.chat.id, tenant.id, String(user.id));
+        return sendLoginLinkMessage(env, message.chat.id, tenant.id, telegramUserId);
       case "status":
         return sendStatusMessage(env, message.chat.id, tenant.id);
       case "help":
         return webhookSend(message.chat.id, omniHelpText(), omniBackMenuKeyboard());
+      case "cancel": {
+        await clearWizard(env, telegramUserId);
+        return webhookSend(message.chat.id, "فرایند نیمه‌کاره لغو شد.", omniMainMenuKeyboard());
+      }
       default: {
         if (await forwardToOmni(env, update)) return json({ ok: true });
         return webhookSend(message.chat.id, omniUnknownCommandText(), omniMainMenuKeyboard());
@@ -327,7 +599,23 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
   }
 
   if (text === OMNI_MENU_TEXT_SATELLITE) {
-    return sendLoginLinkMessage(env, message.chat.id, tenant.id, String(user.id));
+    return sendLoginLinkMessage(env, message.chat.id, tenant.id, telegramUserId);
+  }
+  if (text === OMNI_MENU_TEXT_DEPS) {
+    await clearWizard(env, telegramUserId);
+    try {
+      return sendRendered(message.chat.id, await renderDepsList(env, tenant.id, tenant.displayName, telegramUserId));
+    } catch (error) {
+      return handleErrorView(env, message.chat.id, tenant.id, telegramUserId, error);
+    }
+  }
+  if (text === OMNI_MENU_TEXT_CONNS) {
+    await clearWizard(env, telegramUserId);
+    try {
+      return sendRendered(message.chat.id, await renderConnsList(env, tenant.id, tenant.displayName, telegramUserId));
+    } catch (error) {
+      return handleErrorView(env, message.chat.id, tenant.id, telegramUserId, error);
+    }
   }
   if (text === OMNI_MENU_TEXT_STATUS) {
     return sendStatusMessage(env, message.chat.id, tenant.id);
@@ -336,12 +624,23 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
     return webhookSend(message.chat.id, omniHelpText(), omniBackMenuKeyboard());
   }
   if (text === OMNI_MENU_TEXT_HOME) {
+    await clearWizard(env, telegramUserId);
     return webhookSend(message.chat.id, omniWelcomeText(), omniMainMenuKeyboard());
+  }
+
+  const wizard = await loadWizard(env, telegramUserId);
+  if (wizard) {
+    const result = await processWizardText(env, telegramUserId, wizard, text);
+    return webhookSend(message.chat.id, result.text, result.keyboard);
   }
 
   if (await forwardToOmni(env, update)) return json({ ok: true });
   return webhookSend(message.chat.id, omniFreeTextReply(), omniMainMenuKeyboard());
 }
+
+// ---------------------------------------------------------------------------
+// Callback updates.
+// ---------------------------------------------------------------------------
 
 async function answerCallback(
   env: Env,
@@ -356,30 +655,69 @@ async function answerCallback(
   });
 }
 
-async function editMenuMessage(
+async function editView(
   env: Env,
   chatId: number,
   messageId: number,
-  text: string,
-  replyMarkup: TelegramInlineKeyboard,
+  view: RenderedView,
 ): Promise<void> {
   try {
     await telegramApi(env, "editMessageText", {
       chat_id: chatId,
       message_id: messageId,
-      text,
+      text: view.text,
+      ...(view.html ? { parse_mode: "HTML" } : {}),
       disable_web_page_preview: true,
-      reply_markup: replyMarkup,
+      reply_markup: view.keyboard,
     });
   } catch {
     await telegramApi(env, "sendMessage", {
       chat_id: chatId,
-      text,
+      text: view.text,
+      ...(view.html ? { parse_mode: "HTML" } : {}),
       protect_content: true,
       disable_web_page_preview: true,
-      reply_markup: replyMarkup,
+      reply_markup: view.keyboard,
     });
   }
+}
+
+async function sendView(
+  env: Env,
+  chatId: number,
+  view: RenderedView,
+): Promise<void> {
+  await telegramApi(env, "sendMessage", {
+    chat_id: chatId,
+    text: view.text,
+    ...(view.html ? { parse_mode: "HTML" } : {}),
+    protect_content: true,
+    disable_web_page_preview: true,
+    reply_markup: view.keyboard,
+  });
+}
+
+async function answerError(
+  env: Env,
+  chatId: number,
+  tenantId: string,
+  telegramUserId: string,
+  queryId: string,
+  error: unknown,
+): Promise<void> {
+  const message = faErrorMessage(error);
+  if (message) {
+    await answerCallback(env, queryId, message, true);
+    return;
+  }
+  await answerCallback(env, queryId, "اتصال Cloudflare منقضی شده است.");
+  await sendView(env, chatId, await renderConnectPrompt(env, tenantId, telegramUserId, "🔌 برای این عملیات اول دوباره وصل شوید."));
+}
+
+function deploymentIdFrom(data: string, prefix: string): string | null {
+  if (!data.startsWith(prefix)) return null;
+  const id = data.slice(prefix.length);
+  return /^[0-9a-f-]{36}$/u.test(id) ? id : null;
 }
 
 async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
@@ -401,7 +739,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
   }
 
   const data = query.data ?? "";
-  if (!data.startsWith("v13:") && !data.startsWith("omni:")) {
+  if (!data.startsWith("v13:") && !data.startsWith("omni:") && !data.startsWith("wiz:")) {
     if (await forwardToOmni(env, update)) return json({ ok: true });
     try {
       await answerCallback(env, query.id, "این دکمه متعلق به بخش دیگری است.", true);
@@ -413,62 +751,339 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
 
   try {
     const tenant = await ensureTenant(env, user);
+    const telegramUserId = String(user.id);
+    const principal = botPrincipal(tenant.id, telegramUserId, tenant.displayName);
     const messageId = query.message?.message_id;
-    switch (data) {
-      case "v13:login": {
-        const { loginUrl, ttlMinutes } = await issueLoginLink(env, tenant.id);
-        await audit(env, {
-          tenantId: tenant.id,
-          actorType: "telegram",
-          actorId: String(user.id),
-          action: "login_link.create",
-          outcome: "success",
-        });
-        await answerCallback(env, query.id, "لینک ورود ساخته شد ✅");
-        await telegramApi(env, "sendMessage", {
-          chat_id: chatId,
-          text: omniLoginText(ttlMinutes),
-          protect_content: true,
-          disable_web_page_preview: true,
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "🛰️ ورود به محیط اختصاصی", url: loginUrl }],
-              [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
-            ],
-          },
-        });
-        return json({ ok: true });
-      }
-      case "v13:status": {
-        if (messageId === undefined) return json({ ok: true });
-        await answerCallback(env, query.id, "در حال دریافت وضعیت…");
-        const rows = await listRecentDeployments(env, tenant.id);
-        await editMenuMessage(env, chatId, messageId, formatDeploymentStatus(rows), {
-          inline_keyboard: [
-            [{ text: "🛰️ ورود به محیط اختصاصی V13", callback_data: "v13:login" }],
-            [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
-          ],
-        });
-        return json({ ok: true });
-      }
-      case "v13:help": {
-        if (messageId === undefined) return json({ ok: true });
-        await answerCallback(env, query.id, "راهنما");
-        await editMenuMessage(env, chatId, messageId, omniHelpText(), omniBackMenuKeyboard());
-        return json({ ok: true });
-      }
-      case "omni:home": {
-        if (messageId === undefined) return json({ ok: true });
-        await answerCallback(env, query.id, "منوی اصلی Omni");
-        await editMenuMessage(env, chatId, messageId, omniWelcomeText(), omniMainMenuKeyboard());
-        return json({ ok: true });
-      }
-      default: {
-        if (await forwardToOmni(env, update)) return json({ ok: true });
-        await answerCallback(env, query.id, "این دکمه دیگر معتبر نیست.", true);
-        return json({ ok: true });
-      }
+
+    // --- Private environment section (standalone) ---
+    if (data === "v13:login") {
+      const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenant.id, telegramUserId);
+      await answerCallback(env, query.id, "لینک ورود ساخته شد ✅");
+      await sendView(env, chatId, { text: omniLoginText(ttlMinutes), keyboard: loginKeyboard(appUrl, webUrl), html: false });
+      return json({ ok: true });
     }
+    if (data === "v13:status") {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "در حال دریافت وضعیت…");
+      const rows = await listRecentDeployments(env, tenant.id);
+      await editView(env, chatId, messageId, { text: formatDeploymentStatus(rows), keyboard: omniMainMenuKeyboard(), html: false });
+      return json({ ok: true });
+    }
+    if (data === "v13:help") {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "راهنما");
+      await editView(env, chatId, messageId, { text: omniHelpText(), keyboard: omniBackMenuKeyboard(), html: false });
+      return json({ ok: true });
+    }
+    if (data === "omni:home") {
+      if (messageId === undefined) return json({ ok: true });
+      await clearWizard(env, telegramUserId);
+      await answerCallback(env, query.id, "منوی اصلی Omni");
+      await editView(env, chatId, messageId, { text: omniWelcomeText(), keyboard: omniMainMenuKeyboard(), html: false });
+      return json({ ok: true });
+    }
+    if (data === "v13:delmsg") {
+      if (messageId === undefined) return json({ ok: true });
+      try {
+        await telegramApi(env, "deleteMessage", { chat_id: chatId, message_id: messageId });
+        await answerCallback(env, query.id, "حذف شد 🧨");
+      } catch {
+        await answerCallback(env, query.id, "حذف نشد؛ لطفاً دستی حذفش کنید.", true);
+      }
+      return json({ ok: true });
+    }
+
+    // --- Deployments browser ---
+    if (data === "v13:deps") {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "استقرارها");
+      await editView(env, chatId, messageId, await renderDepsList(env, tenant.id, tenant.displayName, telegramUserId));
+      return json({ ok: true });
+    }
+    if (data === "v13:dep:new") {
+      if (messageId === undefined) return json({ ok: true });
+      const connections = await botListConnections(env, principal);
+      if (connections.length === 0) {
+        await answerCallback(env, query.id, "اول باید Cloudflare را وصل کنید.");
+        await editView(
+          env,
+          chatId,
+          messageId,
+          await renderConnectPrompt(env, tenant.id, telegramUserId, "➕ برای ساخت استقرار اول اتصال Cloudflare بسازید."),
+        );
+        return json({ ok: true });
+      }
+      await answerCallback(env, query.id, "اتصال را انتخاب کنید.");
+      const rows: TelegramInlineKeyboard["inline_keyboard"] = connections.map((connection) => ([
+        { text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40), callback_data: `wiz:conn:${connection.id}` },
+      ]));
+      rows.push(cancelKeyboard().inline_keyboard[0]!);
+      await editView(env, chatId, messageId, {
+        text: "➕ ساخت استقرار جدید — اتصال Cloudflare را انتخاب کنید:",
+        keyboard: { inline_keyboard: rows },
+        html: false,
+      });
+      return json({ ok: true });
+    }
+    const pickedConnection = deploymentIdFrom(data, "wiz:conn:");
+    if (pickedConnection) {
+      if (messageId === undefined) return json({ ok: true });
+      try {
+        const boundary = await botConnectionBoundary(env, principal, pickedConnection);
+        const prompt = await beginDeployWizard(env, telegramUserId, boundary);
+        await answerCallback(env, query.id, "شروع شد ✅");
+        await editView(env, chatId, messageId, { text: prompt.text, keyboard: prompt.keyboard, html: false });
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+    if (data === "wiz:cancel") {
+      await clearWizard(env, telegramUserId);
+      await answerCallback(env, query.id, "لغو شد.");
+      if (messageId !== undefined) {
+        await editView(env, chatId, messageId, { text: omniWelcomeText(), keyboard: omniMainMenuKeyboard(), html: false });
+      }
+      return json({ ok: true });
+    }
+    if (data === "wiz:sni-def" || data === "wiz:ufw:1" || data === "wiz:ufw:0") {
+      if (messageId === undefined) return json({ ok: true });
+      const wizard = await loadWizard(env, telegramUserId);
+      if (!wizard) {
+        await answerCallback(env, query.id, "فرایند منقضی شده؛ از اول شروع کنید.", true);
+        return json({ ok: true });
+      }
+      if (data === "wiz:sni-def") {
+        const prompt = await applySniDefault(env, telegramUserId, wizard);
+        await answerCallback(env, query.id, "پیش‌فرض انتخاب شد.");
+        await editView(env, chatId, messageId, { text: prompt.text, keyboard: prompt.keyboard, html: false });
+      } else {
+        const prompt = await applyUfwChoice(env, telegramUserId, wizard, data === "wiz:ufw:1");
+        await answerCallback(env, query.id, "ثبت شد.");
+        await editView(env, chatId, messageId, { text: prompt.text, keyboard: prompt.keyboard, html: false });
+      }
+      return json({ ok: true });
+    }
+    if (data === "wiz:confirm") {
+      const wizard = await loadWizard(env, telegramUserId);
+      if (!wizard) {
+        await answerCallback(env, query.id, "فرایند منقضی شده؛ از اول شروع کنید.", true);
+        return json({ ok: true });
+      }
+      const state = wizard.state;
+      if (!state.workerName || !state.workerHostname || !state.nodeHostname || !state.vpsIpv4 || !state.acmeEmail || !state.realityServerName || state.enableUfw === undefined) {
+        await answerCallback(env, query.id, "اطلاعات ناقص است؛ از اول شروع کنید.", true);
+        await clearWizard(env, telegramUserId);
+        return json({ ok: true });
+      }
+      try {
+        await answerCallback(env, query.id, "در حال ساخت…");
+        const created = await botCreateDeployment(env, principal, {
+          connectionId: state.connectionId,
+          accountId: state.accountId,
+          zoneId: state.zoneId,
+          workerName: state.workerName,
+          workerHostname: state.workerHostname,
+          nodeHostname: state.nodeHostname,
+          vpsIpv4: state.vpsIpv4,
+          acmeEmail: state.acmeEmail,
+          realityServerName: state.realityServerName,
+          enableUfw: state.enableUfw,
+        });
+        await clearWizard(env, telegramUserId);
+        const bootstrap = renderBootstrapMessage(created.bootstrap, state.workerName);
+        await sendView(env, chatId, {
+          text: `✅ استقرار ساخته شد و Workflow آغاز شد.\n🆔 ${shortId(created.deploymentId)}`,
+          keyboard: omniBackMenuKeyboard(),
+          html: false,
+        });
+        await sendView(env, chatId, { text: bootstrap.text, keyboard: bootstrap.keyboard, html: true });
+      } catch (error) {
+        const message = faErrorMessage(error);
+        await clearWizard(env, telegramUserId);
+        if (message) {
+          await answerCallback(env, query.id, "ساخت ناموفق بود.");
+          await sendView(env, chatId, {
+            text: `${message}\n\nبا «ساخت استقرار جدید» دوباره تلاش کنید.`,
+            keyboard: {
+              inline_keyboard: [
+                [{ text: "🔁 شروع دوباره", callback_data: "v13:dep:new" }],
+                [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+              ],
+            },
+            html: false,
+          });
+        } else {
+          await answerCallback(env, query.id, "اتصال Cloudflare منقضی شده است.");
+          await sendView(env, chatId, await renderConnectPrompt(env, tenant.id, telegramUserId, "➕ برای ساخت استقرار اول دوباره وصل شوید."));
+        }
+      }
+      return json({ ok: true });
+    }
+
+    const depDetail = deploymentIdFrom(data, "v13:dep:");
+    if (depDetail) {
+      if (messageId === undefined) return json({ ok: true });
+      try {
+        await answerCallback(env, query.id, "جزئیات");
+        await editView(env, chatId, messageId, await renderDepDetail(env, tenant.id, tenant.displayName, telegramUserId, depDetail));
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+    const depRetry = deploymentIdFrom(data, "v13:dep-retry:");
+    if (depRetry) {
+      try {
+        await botRetryDeployment(env, principal, depRetry);
+        await answerCallback(env, query.id, "Workflow جدید آغاز شد ✅");
+        if (messageId !== undefined) {
+          await editView(env, chatId, messageId, await renderDepDetail(env, tenant.id, tenant.displayName, telegramUserId, depRetry));
+        }
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+    const depRevoke = deploymentIdFrom(data, "v13:dep-revoke:");
+    if (depRevoke && !data.startsWith("v13:dep-revoke-yes:")) {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "تأیید ابطال");
+      await editView(env, chatId, messageId, {
+        text: "⚠️ این استقرار باطل شود؟ اشتراک‌ها از کار می‌افتند و این عمل قابل بازگشت نیست.",
+        keyboard: {
+          inline_keyboard: [
+            [{ text: "🛑 بله، ابطال شود", callback_data: `v13:dep-revoke-yes:${depRevoke}` }],
+            [{ text: "❌ منصرف شدم", callback_data: `v13:dep:${depRevoke}` }],
+          ],
+        },
+        html: false,
+      });
+      return json({ ok: true });
+    }
+    const depRevokeYes = deploymentIdFrom(data, "v13:dep-revoke-yes:");
+    if (depRevokeYes) {
+      try {
+        await botRevokeDeployment(env, principal, depRevokeYes);
+        await answerCallback(env, query.id, "ابطال آغاز شد.");
+        if (messageId !== undefined) {
+          await editView(env, chatId, messageId, await renderDepDetail(env, tenant.id, tenant.displayName, telegramUserId, depRevokeYes));
+        }
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+    const depBoot = deploymentIdFrom(data, "v13:dep-boot:");
+    if (depBoot) {
+      try {
+        const detail = await botGetDeployment(env, principal, depBoot);
+        const rotated = await botRotateBootstrap(env, principal, depBoot);
+        const bootstrap = renderBootstrapMessage(rotated.bootstrap, detail.deployment.workerName);
+        await answerCallback(env, query.id, "بوت‌استرپ جدید صادر شد ✅");
+        await sendView(env, chatId, { text: bootstrap.text, keyboard: bootstrap.keyboard, html: true });
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+    const depSubs = deploymentIdFrom(data, "v13:dep-subs:");
+    if (depSubs) {
+      try {
+        const detail = await botGetDeployment(env, principal, depSubs);
+        if (!detail.subscriptions) {
+          await answerCallback(env, query.id, "اشتراک فقط برای استقرار فعال نمایش داده می‌شود.", true);
+          return json({ ok: true });
+        }
+        const view = renderSubscriptionsMessage(detail.subscriptions, detail.deployment.workerName, false);
+        await answerCallback(env, query.id, "اشتراک‌ها");
+        await sendView(env, chatId, { text: view.text, keyboard: view.keyboard, html: true });
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+    const depSubrot = deploymentIdFrom(data, "v13:dep-subrot:");
+    if (depSubrot && !data.startsWith("v13:dep-subrot-yes:")) {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "تأیید چرخش اشتراک");
+      await editView(env, chatId, messageId, {
+        text: "🔁 اشتراک‌های فعلی از کار می‌افتند و لینک جدید صادر می‌شود. ادامه می‌دهید؟",
+        keyboard: {
+          inline_keyboard: [
+            [{ text: "🔁 بله، بچرخان", callback_data: `v13:dep-subrot-yes:${depSubrot}` }],
+            [{ text: "❌ منصرف شدم", callback_data: `v13:dep:${depSubrot}` }],
+          ],
+        },
+        html: false,
+      });
+      return json({ ok: true });
+    }
+    const depSubrotYes = deploymentIdFrom(data, "v13:dep-subrot-yes:");
+    if (depSubrotYes) {
+      try {
+        const detail = await botGetDeployment(env, principal, depSubrotYes);
+        const rotated = await botRotateSubscription(env, principal, depSubrotYes);
+        const view = renderSubscriptionsMessage(rotated.subscriptions, detail.deployment.workerName, true);
+        await answerCallback(env, query.id, "اشتراک چرخید ✅");
+        await sendView(env, chatId, { text: view.text, keyboard: view.keyboard, html: true });
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+
+    // --- Cloudflare connections browser ---
+    if (data === "v13:conns") {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "اتصال‌ها");
+      await editView(env, chatId, messageId, await renderConnsList(env, tenant.id, tenant.displayName, telegramUserId));
+      return json({ ok: true });
+    }
+    if (data === "v13:conn-new") {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "ورود به پنل امن");
+      await editView(
+        env,
+        chatId,
+        messageId,
+        await renderConnectPrompt(env, tenant.id, telegramUserId, "➕ ساخت اتصال جدید فقط در پنل امن انجام می‌شود."),
+      );
+      return json({ ok: true });
+    }
+    const connDisc = deploymentIdFrom(data, "v13:conn-disc:");
+    if (connDisc && !data.startsWith("v13:conn-disc-yes:")) {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "تأیید قطع اتصال");
+      await editView(env, chatId, messageId, {
+        text: "🗑️ این اتصال قطع شود؟ نسخهٔ ذخیره‌شده از V13 پاک می‌شود (توکن اصلی در Cloudflare می‌ماند).",
+        keyboard: {
+          inline_keyboard: [
+            [{ text: "🗑️ بله، قطع شود", callback_data: `v13:conn-disc-yes:${connDisc}` }],
+            [{ text: "❌ منصرف شدم", callback_data: "v13:conns" }],
+          ],
+        },
+        html: false,
+      });
+      return json({ ok: true });
+    }
+    const connDiscYes = deploymentIdFrom(data, "v13:conn-disc-yes:");
+    if (connDiscYes) {
+      try {
+        await botDisconnectConnection(env, principal, connDiscYes);
+        await answerCallback(env, query.id, "قطع شد ✅");
+        if (messageId !== undefined) {
+          await editView(env, chatId, messageId, await renderConnsList(env, tenant.id, tenant.displayName, telegramUserId));
+        }
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+
+    if (await forwardToOmni(env, update)) return json({ ok: true });
+    await answerCallback(env, query.id, "این دکمه دیگر معتبر نیست.", true);
+    return json({ ok: true });
   } catch (error) {
     console.error("telegram_callback_failed", {
       name: error instanceof Error ? error.name : "UnknownError",

@@ -1,6 +1,16 @@
-# V13.2.0 Release Manifest
+# V13.3.0 Release Manifest
 
 Build date: 2026-09-10
+
+## Full worker management inside Telegram
+
+- The bot now exposes full worker capabilities natively: step-by-step deployment wizard (7 steps + confirm), deployments list/detail, retry, revoke (with confirmation), bootstrap commands, subscription view/rotation, and Cloudflare connection list/disconnect.
+- The «🛰️ ورود به محیط اختصاصی V13» section stays separate; login now offers two one-time links: open the panel inside Telegram (WebApp) or in the browser.
+- New Cloudflare connections are still created only in the secure panel (inside Telegram via WebApp or in the browser); raw API tokens are never accepted in chat.
+- Sensitive bot outputs (bootstrap commands, subscription URLs) are sent with `protect_content` plus a self-destruct («🧨 حذف این پیام») button.
+- Bot and panel share one code path: `src/bot-actions.ts` reuses the same deployment/connection handlers with a bot principal; ownership and resource boundaries are enforced identically.
+- New `0003_telegram_wizards.sql` migration stores short-lived (30-minute) wizard state; run `npx wrangler d1 migrations apply v13-control-plane --remote` before deploy.
+- New `/cancel` bot command; webhook script installs it automatically.
 
 ## Omni private-section integration
 
@@ -57,7 +67,7 @@ Build date: 2026-09-10
 - Security preflight: passed
 - Oxlint: 0 warnings and 0 errors
 - TypeScript strict typecheck: passed
-- Vitest: 38/38 tests passed across 6 files (15 new Omni/Telegram tests)
+- Vitest: 56/56 tests passed across 9 files (21 Telegram + 9 wizard tests)
 - npm audit: 0 known vulnerabilities
 - Wrangler 4.130.0 dry-run build under Node.js 22: passed
 - D1 clean local migration: both migrations applied; auth/resource columns and expiry index verified

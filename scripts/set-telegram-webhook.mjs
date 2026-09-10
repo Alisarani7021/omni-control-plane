@@ -38,6 +38,7 @@ const commands = await telegramApi("setMyCommands", {
     { command: "start", description: "منوی اصلی Omni" },
     { command: "panel", description: "ورود به محیط اختصاصی V13" },
     { command: "status", description: "وضعیت استقرارها" },
+    { command: "cancel", description: "لغو فرایند نیمه‌کاره" },
     { command: "help", description: "راهنما" },
   ],
 });
