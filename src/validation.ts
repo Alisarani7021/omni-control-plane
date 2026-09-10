@@ -66,6 +66,7 @@ export function assertAgentCompletePayload(input: unknown): asserts input is {
   deploymentId: string;
   agentToken: string;
   singBoxVersion: string;
+  vlessPort: number;
   vlessUuid: string;
   realityPublicKey: string;
   realityShortId: string;
@@ -88,5 +89,8 @@ export function assertAgentCompletePayload(input: unknown): asserts input is {
     if (typeof body[field] !== "string" || !pattern.test(body[field])) {
       throw new HttpError(400, "invalid_input", `${field} is invalid`);
     }
+  }
+  if (typeof body.vlessPort !== "number" || !Number.isInteger(body.vlessPort) || ![443, 8443].includes(body.vlessPort)) {
+    throw new HttpError(400, "invalid_input", "vlessPort is invalid");
   }
 }

@@ -35,6 +35,30 @@ command -v python3 >/dev/null || fail "python3 is required."
 command -v openssl >/dev/null || fail "openssl is required."
 [ ! -e "$MARKER" ] || fail "This node was already bootstrapped. Rotate credentials before reinstalling."
 
+# A previous interrupted Bootstrap may have left our own service running.
+systemctl stop sing-box.service >/dev/null 2>&1 || true
+
+port_available() {
+  python3 - "$1" "$2" <<'PY'
+import socket, sys
+kind, port = sys.argv[1], int(sys.argv[2])
+sock_type = socket.SOCK_STREAM if kind == "tcp" else socket.SOCK_DGRAM
+try:
+    with socket.socket(socket.AF_INET, sock_type) as sock:
+        sock.bind(("0.0.0.0", port))
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
+VLESS_PORT=443
+if ! port_available tcp "$VLESS_PORT"; then
+  VLESS_PORT=8443
+  port_available tcp "$VLESS_PORT" || fail "TCP ports 443 and 8443 are already occupied"
+fi
+port_available udp 443 || fail "UDP port 443 is already occupied"
+printf 'Selected VLESS Reality TCP port %s; Hysteria2 remains on UDP 443.\n' "$VLESS_PORT"
+
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64; EXPECTED_SHA=__AMD64_SHA__ ;;
   aarch64|arm64) ARCH=arm64; EXPECTED_SHA=__ARM64_SHA__ ;;
@@ -54,11 +78,12 @@ SING_BOX_SOURCE=$(find "$TMP_DIR" -type f -name sing-box -perm -u+x | head -n 1)
 "$SING_BOX_SOURCE" version | grep -F "sing-box version $VERSION" >/dev/null || fail "Unexpected sing-box version"
 install -m 0755 "$SING_BOX_SOURCE" /usr/local/bin/sing-box
 
-install -d -m 0750 /etc/sing-box /var/lib/sing-box /var/lib/v13-agent
 if ! id sing-box >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/sing-box --shell /usr/sbin/nologin sing-box
 fi
-chown -R sing-box:sing-box /var/lib/sing-box
+install -d -o root -g sing-box -m 0750 /etc/sing-box
+install -d -o sing-box -g sing-box -m 0750 /var/lib/sing-box
+install -d -o root -g root -m 0750 /var/lib/v13-agent
 
 KEYPAIR=$(/usr/local/bin/sing-box generate reality-keypair)
 REALITY_PRIVATE_KEY=$(printf '%s\n' "$KEYPAIR" | awk -F': ' '$1 == "PrivateKey" {print $2}')
@@ -68,7 +93,7 @@ REALITY_SHORT_ID=$(/usr/local/bin/sing-box generate rand --hex 8)
 HYSTERIA2_PASSWORD=$(openssl rand -base64 36 | tr -d '=+/\n' | head -c 43)
 AGENT_TOKEN=$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n')
 
-export NODE_HOSTNAME ACME_EMAIL REALITY_SERVER_NAME REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY
+export NODE_HOSTNAME ACME_EMAIL REALITY_SERVER_NAME REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY VLESS_PORT
 export VLESS_UUID REALITY_SHORT_ID HYSTERIA2_PASSWORD AGENT_TOKEN DEPLOYMENT_ID CONTROL_URL VERSION
 python3 - <<'PY'
 import json, os
@@ -88,8 +113,8 @@ config = {
         {
             "type": "vless",
             "tag": "vless-reality-in",
-            "listen": "::",
-            "listen_port": 443,
+            "listen": "0.0.0.0",
+            "listen_port": int(os.environ["VLESS_PORT"]),
             "users": [{
                 "name": "v13-user",
                 "uuid": os.environ["VLESS_UUID"],
@@ -113,7 +138,7 @@ config = {
         {
             "type": "hysteria2",
             "tag": "hysteria2-in",
-            "listen": "::",
+            "listen": "0.0.0.0",
             "listen_port": 443,
             "users": [{"name": "v13-user", "password": os.environ["HYSTERIA2_PASSWORD"]}],
             "ignore_client_bandwidth": False,
@@ -174,7 +199,7 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sing-box
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
@@ -192,14 +217,23 @@ if [ "$ENABLE_UFW" = "1" ]; then
   [ -n "$SSH_PORT" ] || SSH_PORT=22
   ufw allow "$SSH_PORT/tcp"
   ufw allow 80/tcp
-  ufw allow 443/tcp
+  ufw allow "$VLESS_PORT/tcp"
   ufw allow 443/udp
   ufw --force enable
 fi
 
 systemctl daemon-reload
-systemctl enable --now sing-box.service
-sleep 2
+systemctl enable sing-box.service >/dev/null
+systemctl reset-failed sing-box.service >/dev/null 2>&1 || true
+systemctl restart --no-block sing-box.service
+for _ in {1..30}; do
+  if systemctl is-active --quiet sing-box.service; then
+    sleep 3
+    systemctl is-active --quiet sing-box.service && break
+  fi
+  systemctl is-failed --quiet sing-box.service && break
+  sleep 1
+done
 systemctl is-active --quiet sing-box.service || {
   journalctl -u sing-box.service -n 80 --no-pager >&2 || true
   fail "sing-box failed to start"
@@ -211,6 +245,7 @@ payload = {
     "deploymentId": os.environ["DEPLOYMENT_ID"],
     "agentToken": os.environ["AGENT_TOKEN"],
     "singBoxVersion": os.environ["VERSION"],
+    "vlessPort": int(os.environ["VLESS_PORT"]),
     "vlessUuid": os.environ["VLESS_UUID"],
     "realityPublicKey": os.environ["REALITY_PUBLIC_KEY"],
     "realityShortId": os.environ["REALITY_SHORT_ID"],
@@ -359,6 +394,7 @@ export async function completeBootstrap(request: Request, env: Env): Promise<Res
   const bundle = await decryptJson<SecretBundle>(existingSecret.bundle_enc, env.TOKEN_ENCRYPTION_KEY, `deployment:${deployment.id}`);
   const merged: SecretBundle = {
     ...bundle,
+    vlessPort: payload.vlessPort,
     vlessUuid: payload.vlessUuid,
     realityPublicKey: payload.realityPublicKey,
     realityShortId: payload.realityShortId,

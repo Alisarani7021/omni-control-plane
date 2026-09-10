@@ -71,6 +71,7 @@ export interface ConnectionRow {
 
 export interface SecretBundle {
   subscriptionToken: string;
+  vlessPort?: number;
   vlessUuid?: string;
   realityPublicKey?: string;
   realityShortId?: string;
@@ -82,6 +83,7 @@ export interface AgentCompletePayload {
   deploymentId: string;
   agentToken: string;
   singBoxVersion: string;
+  vlessPort: number;
   vlessUuid: string;
   realityPublicKey: string;
   realityShortId: string;

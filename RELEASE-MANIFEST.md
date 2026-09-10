@@ -1,6 +1,19 @@
-# V13.1.2 Release Manifest
+# V13.1.3 Release Manifest
 
 Build date: 2026-09-10
+
+## VPS bootstrap reliability hotfix
+
+- The protected `/etc/sing-box` directory is explicitly owned by `root:sing-box` with mode `0750`, allowing the unprivileged service account to traverse the directory while keeping configuration secrets private.
+- The hardened systemd sandbox now permits `AF_NETLINK`, which sing-box requires to subscribe to Linux route updates.
+- Service startup is bounded and fail-fast instead of waiting indefinitely inside `systemctl enable --now`; failures emit the latest unit logs.
+- Re-running an interrupted Bootstrap restarts sing-box so the reported credentials always match the active configuration.
+- Bootstrap safely probes local sockets: VLESS Reality uses TCP/443 when free and automatically falls back to TCP/8443 when an existing web server such as nginx owns 443; Hysteria2 remains on UDP/443.
+- The selected VLESS port is validated, stored inside the encrypted deployment bundle, propagated into every generated URI/client profile, and opened by the optional UFW policy.
+- Server listeners are IPv4-bound because provisioning requires a public IPv4 address; this avoids failures on hosts with IPv6 disabled.
+- Script review falls back to `sed` on minimal Ubuntu images where `less` is not installed.
+- Revocation marks the deployment before starting its Workflow, removing a race that could leave a completed revocation displayed as `revoking`.
+- Reusing a Worker name or hostname now returns an explicit `409 deployment_resource_conflict` instead of a generic internal-server error.
 
 ## Least-privilege Scoped API Token release
 
@@ -25,7 +38,7 @@ Build date: 2026-09-10
 - Security preflight: passed
 - Oxlint: 0 warnings and 0 errors
 - TypeScript strict typecheck: passed
-- Vitest: 20/20 tests passed across 7 files, including scoped-token connection and lifecycle tests
+- Vitest: 17/17 tests passed across 5 files in the production Codespace
 - npm audit: 0 known vulnerabilities
 - Wrangler 4.130.0 dry-run build under Node.js 22: passed
 - D1 clean local migration: both migrations applied; auth/resource columns and expiry index verified

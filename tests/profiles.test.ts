@@ -27,6 +27,7 @@ const deployment: DeploymentRow = {
 
 const secrets: SecretBundle = {
   subscriptionToken: "s".repeat(43),
+  vlessPort: 8443,
   vlessUuid: "bf000d23-0752-40b4-affe-68f7707a9661",
   realityPublicKey: "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0",
   realityShortId: "0123456789abcdef",
@@ -50,9 +51,10 @@ describe("profile generation", () => {
 
   it("builds separate sing-box profiles with one real outbound each", () => {
     const bundle = buildReadyBundle(deployment, secrets);
-    const vless = bundle.profiles.vless as { outbounds: Array<{ type: string }> };
+    const vless = bundle.profiles.vless as { outbounds: Array<{ type: string; server_port: number }> };
     const hy2 = bundle.profiles.hysteria2 as { outbounds: Array<{ type: string }> };
-    expect(vless.outbounds).toEqual([expect.objectContaining({ type: "vless" })]);
+    expect(vless.outbounds).toEqual([expect.objectContaining({ type: "vless", server_port: 8443 })]);
+    expect(bundle.uris[0]).toContain(":8443?");
     expect(hy2.outbounds).toEqual([expect.objectContaining({ type: "hysteria2" })]);
   });
 });

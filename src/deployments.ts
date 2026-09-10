@@ -41,7 +41,7 @@ function bootstrapInstructions(env: Env, token: string, deploymentId: string): R
     expiresInSeconds: parsePositiveInt(env.BOOTSTRAP_TTL_SECONDS, 3600, 86_400),
     token,
     downloadCommand: `curl --fail --show-error --silent --proto '=https' --tlsv1.2 -H 'Authorization: Bearer ${token}' '${endpoint}' -o 'v13-bootstrap-${deploymentId}.sh'`,
-    inspectCommand: `less 'v13-bootstrap-${deploymentId}.sh'`,
+    inspectCommand: `if command -v less >/dev/null 2>&1; then less 'v13-bootstrap-${deploymentId}.sh'; else sed -n '1,320p' 'v13-bootstrap-${deploymentId}.sh'; fi`,
     executeCommand: `sudo bash 'v13-bootstrap-${deploymentId}.sh'`,
     eraseCommand: `shred -u 'v13-bootstrap-${deploymentId}.sh' || rm -f 'v13-bootstrap-${deploymentId}.sh'`,
   };
@@ -69,6 +69,19 @@ export async function createDeployment(
   }
   if (input.realityServerName === input.nodeHostname) {
     throw new HttpError(400, "invalid_reality_target", "Reality handshake target must not point back to this VPS");
+  }
+  const conflict = await env.DB.prepare(
+    `SELECT id, status FROM deployments
+     WHERE (account_id = ? AND worker_name = ?) OR worker_hostname = ? OR node_hostname = ?
+     LIMIT 1`,
+  ).bind(input.accountId, input.workerName, input.workerHostname, input.nodeHostname)
+    .first<{ id: string; status: string }>();
+  if (conflict) {
+    throw new HttpError(
+      409,
+      "deployment_resource_conflict",
+      `Worker name or hostname is already assigned to an existing ${conflict.status} deployment`,
+    );
   }
 
   const deploymentId = crypto.randomUUID();
@@ -304,9 +317,16 @@ export async function revokeDeployment(
   if (deployment.status === "revoked") return json({ ok: true, status: "revoked" });
   if (deployment.status === "revoking") throw new HttpError(409, "invalid_deployment_state", "Revocation is already running");
   await ensureActiveDeploymentConnection(env, principal, deployment, await requestedConnectionId(request));
-  const workflowInstanceId = await startWorkflow(env, { action: "revoke", deploymentId: deployment.id });
   await env.DB.prepare("UPDATE deployments SET status = 'revoking', status_detail = NULL, updated_at = ? WHERE id = ?")
     .bind(nowIso(), deployment.id).run();
+  let workflowInstanceId: string;
+  try {
+    workflowInstanceId = await startWorkflow(env, { action: "revoke", deploymentId: deployment.id });
+  } catch (error) {
+    await env.DB.prepare("UPDATE deployments SET status = ?, status_detail = 'revoke_workflow_start_failed', updated_at = ? WHERE id = ?")
+      .bind(deployment.status, nowIso(), deployment.id).run();
+    throw error;
+  }
   await audit(env, {
     tenantId: principal.tenantId,
     actorType: "user",

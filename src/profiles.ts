@@ -46,6 +46,7 @@ export function buildReadyBundle(deployment: DeploymentRow, secrets: SecretBundl
     throw new Error("Agent credentials are incomplete");
   }
   const label = deployment.worker_name;
+  const vlessPort = secrets.vlessPort ?? 443;
   const vlessQuery = new URLSearchParams({
     encryption: "none",
     flow: "xtls-rprx-vision",
@@ -56,7 +57,7 @@ export function buildReadyBundle(deployment: DeploymentRow, secrets: SecretBundl
     sid: secrets.realityShortId,
     type: "tcp",
   });
-  const vlessUri = `vless://${secrets.vlessUuid}@${deployment.node_hostname}:443?${vlessQuery.toString()}#${encodeURIComponent(`${label}-reality`)}`;
+  const vlessUri = `vless://${secrets.vlessUuid}@${deployment.node_hostname}:${vlessPort}?${vlessQuery.toString()}#${encodeURIComponent(`${label}-reality`)}`;
   const hy2Query = new URLSearchParams({ sni: deployment.node_hostname, insecure: "0" });
   const hy2Uri = `hysteria2://${encodeURIComponent(secrets.hysteria2Password)}@${deployment.node_hostname}:443/?${hy2Query.toString()}#${encodeURIComponent(`${label}-hy2`)}`;
 
@@ -64,7 +65,7 @@ export function buildReadyBundle(deployment: DeploymentRow, secrets: SecretBundl
     type: "vless",
     tag: "proxy",
     server: deployment.node_hostname,
-    server_port: 443,
+    server_port: vlessPort,
     uuid: secrets.vlessUuid,
     flow: "xtls-rprx-vision",
     network: "tcp",
