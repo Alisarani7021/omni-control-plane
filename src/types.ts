@@ -3,15 +3,14 @@ export interface Env {
   PROVISION_WORKFLOW: Workflow<WorkflowParams>;
   PUBLIC_BASE_URL: string;
   BOT_USERNAME: string;
-  CF_OAUTH_CLIENT_ID: string;
   SING_BOX_VERSION: string;
   SESSION_TTL_SECONDS: string;
   LOGIN_LINK_TTL_SECONDS: string;
   BOOTSTRAP_TTL_SECONDS: string;
+  API_TOKEN_TTL_SECONDS?: string;
   ADMIN_TELEGRAM_IDS: string;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
-  CF_OAUTH_CLIENT_SECRET: string;
   TOKEN_ENCRYPTION_KEY: string;
 }
 
@@ -54,12 +53,17 @@ export interface DeploymentRow {
 export interface ConnectionRow {
   id: string;
   tenant_id: string;
+  auth_type: "oauth" | "api_token";
   access_token_enc: string;
   refresh_token_enc: string | null;
   expires_at: string | null;
   scopes: string | null;
   cf_user_id: string | null;
   cf_email: string | null;
+  resource_account_id: string | null;
+  resource_account_name: string | null;
+  resource_zone_id: string | null;
+  resource_zone_name: string | null;
   revoked_at: string | null;
   created_at: string;
   updated_at: string;

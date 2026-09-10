@@ -1,5 +1,10 @@
 import { audit } from "./db";
-import { cloudflareApi, getConnection, getValidAccessToken } from "./cloudflare-api";
+import {
+  cloudflareApi,
+  disconnectConnectionIfIdle,
+  getConnection,
+  getValidCloudflareAuth,
+} from "./cloudflare-api";
 import { HttpError, json, readJson } from "./http";
 import {
   addSecondsIso,
@@ -10,8 +15,15 @@ import {
   randomToken,
   sha256,
 } from "./security";
-import type { DeploymentRow, Env, SecretBundle, SessionPrincipal, WorkflowParams } from "./types";
+import type { ConnectionRow, DeploymentRow, Env, SecretBundle, SessionPrincipal, WorkflowParams } from "./types";
 import { validateCreateDeployment } from "./validation";
+
+function assertConnectionResourceBoundary(connection: ConnectionRow, accountId: string, zoneId: string): void {
+  if (connection.auth_type !== "api_token") return;
+  if (connection.resource_account_id !== accountId || connection.resource_zone_id !== zoneId) {
+    throw new HttpError(403, "cloudflare_resource_mismatch", "Selected resources are outside this token's stored boundary");
+  }
+}
 
 async function startWorkflow(env: Env, params: WorkflowParams): Promise<string> {
   const instance = await env.PROVISION_WORKFLOW.create({
@@ -41,10 +53,11 @@ export async function createDeployment(
   principal: SessionPrincipal,
 ): Promise<Response> {
   const input = validateCreateDeployment(await readJson<unknown>(request));
-  const connection = await getConnection(env, input.oauthConnectionId, principal.tenantId);
-  const accessToken = await getValidAccessToken(env, connection);
+  const connection = await getConnection(env, input.connectionId, principal.tenantId);
+  assertConnectionResourceBoundary(connection, input.accountId, input.zoneId);
+  const auth = await getValidCloudflareAuth(env, connection);
   const zone = await cloudflareApi<{ id: string; name: string; status: string; account: { id: string } }>(
-    accessToken,
+    auth,
     `/zones/${input.zoneId}`,
   );
   if (zone.status !== "active" || zone.account.id !== input.accountId) {
@@ -103,6 +116,11 @@ export async function createDeployment(
   } catch (error) {
     await env.DB.prepare("UPDATE deployments SET status = 'failed', status_detail = 'workflow_start_failed', updated_at = ? WHERE id = ?")
       .bind(nowIso(), deploymentId).run();
+    try {
+      await disconnectConnectionIfIdle(env, connection.id, deploymentId);
+    } catch {
+      // Expiry cleanup remains the final safety net for temporary scoped API tokens.
+    }
     throw error;
   }
   await audit(env, {
@@ -138,6 +156,47 @@ async function ownedDeployment(env: Env, principal: SessionPrincipal, deployment
     .bind(deploymentId, principal.tenantId).first<DeploymentRow>();
   if (!deployment) throw new HttpError(404, "deployment_not_found", "Deployment not found");
   return deployment;
+}
+
+async function requestedConnectionId(request: Request): Promise<string | null> {
+  const body = await readJson<{ connectionId?: unknown; oauthConnectionId?: unknown }>(request);
+  const connectionId = body.connectionId ?? body.oauthConnectionId;
+  if (connectionId === undefined || connectionId === "") return null;
+  if (typeof connectionId !== "string" || !/^[0-9a-f-]{36}$/u.test(connectionId)) {
+    throw new HttpError(400, "invalid_connection", "Cloudflare connection ID is invalid");
+  }
+  return connectionId;
+}
+
+async function ensureActiveDeploymentConnection(
+  env: Env,
+  principal: SessionPrincipal,
+  deployment: DeploymentRow,
+  replacementConnectionId: string | null,
+): Promise<void> {
+  try {
+    await getConnection(env, deployment.oauth_connection_id, principal.tenantId);
+    return;
+  } catch {
+    // A temporary Cloudflare credential is intentionally erased after a terminal task.
+  }
+  if (!replacementConnectionId) {
+    throw new HttpError(409, "cloudflare_reconnect_required", "Reconnect Cloudflare and select the new connection first");
+  }
+  let replacement: Awaited<ReturnType<typeof getConnection>>;
+  try {
+    replacement = await getConnection(env, replacementConnectionId, principal.tenantId);
+  } catch {
+    throw new HttpError(400, "invalid_connection", "The selected Cloudflare connection is unavailable");
+  }
+  assertConnectionResourceBoundary(replacement, deployment.account_id, deployment.zone_id);
+  const auth = await getValidCloudflareAuth(env, replacement);
+  const zone = await cloudflareApi<{ account: { id: string }; status: string }>(auth, `/zones/${deployment.zone_id}`);
+  if (zone.status !== "active" || zone.account.id !== deployment.account_id) {
+    throw new HttpError(403, "cloudflare_resource_mismatch", "The new Cloudflare connection cannot manage this deployment's zone");
+  }
+  await env.DB.prepare("UPDATE deployments SET oauth_connection_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?")
+    .bind(replacement.id, nowIso(), deployment.id, principal.tenantId).run();
 }
 
 export async function getDeployment(
@@ -219,6 +278,7 @@ export async function retryDeployment(
   if (!["agent_ready", "failed"].includes(deployment.status)) {
     throw new HttpError(409, "invalid_deployment_state", "This deployment is not in a retryable state");
   }
+  await ensureActiveDeploymentConnection(env, principal, deployment, await requestedConnectionId(request));
   const action = deployment.agent_token_hash ? "finalize" : "prepare";
   const workflowInstanceId = await startWorkflow(env, { action, deploymentId: deployment.id });
   await audit(env, {
@@ -243,6 +303,7 @@ export async function revokeDeployment(
   const deployment = await ownedDeployment(env, principal, deploymentId);
   if (deployment.status === "revoked") return json({ ok: true, status: "revoked" });
   if (deployment.status === "revoking") throw new HttpError(409, "invalid_deployment_state", "Revocation is already running");
+  await ensureActiveDeploymentConnection(env, principal, deployment, await requestedConnectionId(request));
   const workflowInstanceId = await startWorkflow(env, { action: "revoke", deploymentId: deployment.id });
   await env.DB.prepare("UPDATE deployments SET status = 'revoking', status_detail = NULL, updated_at = ? WHERE id = ?")
     .bind(nowIso(), deployment.id).run();

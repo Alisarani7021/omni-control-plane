@@ -12,14 +12,14 @@ const rules = [
   { name: "legacy forgeable cookie", pattern: /omni_auth\s*=\s*1/iu },
   { name: "public setWebhook route", pattern: /pathname\s*===?\s*["']\/setwebhook/iu },
   { name: "hardcoded Telegram token", pattern: /\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/u },
-  { name: "global API key header", pattern: /X-Auth-Key/iu },
+  { name: "legacy Global API Key header", pattern: /X-Auth-(?:Key|Email)/iu },
   { name: "remote source deployment", pattern: /raw\.githubusercontent\.com|cdn\.jsdelivr\.net/iu },
 ];
 let failed = false;
 for (const path of sourceFiles) {
   const content = readFileSync(path, "utf8");
   for (const rule of rules) {
-    if (rule.pattern.test(content)) {
+    if (rule.pattern.test(content) && (!rule.allowedSuffix || !path.endsWith(rule.allowedSuffix))) {
       console.error(`${rule.name}: ${path}`);
       failed = true;
     }

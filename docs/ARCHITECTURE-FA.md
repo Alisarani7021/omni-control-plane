@@ -1,95 +1,103 @@
-# معماری V13 — از کنترل‌پلین تا VPS
+# معماری V13
 
-## ۱) اجزای اصلی
+## ۱. اجزا
 
-1. **Telegram Bot**: فقط رابط شروع و اعلان وضعیت است. شناسهٔ کاربر را می‌گیرد و لینک یک‌بارمصرف پنل می‌سازد.
-2. **Control Plane Worker**: نشست‌ها، OAuth، API، پنل، callback عامل و orchestration را اجرا می‌کند.
-3. **D1**: دادهٔ چندمستاجری، وضعیت استقرار، nonceها، هش توکن‌ها، audit و health را نگه می‌دارد.
-4. **Cloudflare OAuth**: دسترسی محدود و قابل ابطال به حساب هر کاربر می‌دهد؛ API Token در چت وجود ندارد.
-5. **Cloudflare Workflows**: عملیات prepare/finalize/revoke را ماندگار، retryپذیر و idempotent اجرا می‌کند.
-6. **Data-plane Worker کاربر**: فقط health عمومی و subscription دارای توکن تصادفی را سرو می‌کند.
-7. **VPS Agent**: اسکریپت one-shot ممیزی‌پذیر که sing-box را با hash pin نصب می‌کند؛ سپس timer فقط health می‌فرستد.
+1. **Telegram Bot روی Cloudflare Worker**: شناسایی user، ساخت tenant و صدور لینک ورود یک‌بارمصرف.
+2. **Control Plane Worker**: نشست امن، پنل HTTPS، API محدود، webhook عامل و orchestration.
+3. **Cloudflare D1**: tenant، session، connection رمز‌شده، deployment، audit و health.
+4. **Cloudflare Workflows**: اجرای retryپذیر prepare/finalize/revoke.
+5. **Data-plane Worker متعلق به کاربر**: انتشار subscription خصوصی؛ credential کنترل‌پلین را دریافت نمی‌کند.
+6. **VPS متعلق به کاربر**: sing-box واقعی برای VLESS Reality و Hysteria2 و health reporter.
 
-## ۲) جریان ورود
+کنترل‌پلین و ربات serverless روی Cloudflare می‌مانند. VPS فقط data plane است.
 
-```text
-Telegram update
-  -> بررسی X-Telegram-Bot-Api-Secret-Token
-  -> deduplicate با update_id در D1
-  -> ساخت/به‌روزرسانی tenant
-  -> ساخت token تصادفی یک‌بارمصرف و ذخیره فقط SHA-256 آن
-  -> لینک /login?t=...
-Browser
-  -> مصرف اتمی لینک
-  -> ساخت session تصادفی
-  -> ذخیره فقط SHA-256 session در D1
-  -> Cookie: HttpOnly + Secure + SameSite=Lax
-```
+## ۲. اتصال Cloudflare با حداقل دسترسی
 
-Cookie ثابت یا مقدار قابل حدس وجود ندارد؛ در نتیجه `v13_session=1` هیچ هویتی ایجاد نمی‌کند.
+مسیر اصلی محصول **Scoped API Token** است و به OAuth Client، publisher verification یا Global API Key وابسته نیست.
 
-## ۳) جریان OAuth
+Token لازم است فقط این مجوزها را داشته باشد:
 
-```text
-Session معتبر
-  -> state تصادفی + PKCE verifier
-  -> verifier با AES-256-GCM و AAD مخصوص همان state
-  -> Cloudflare authorization endpoint
-  -> callback با state + همان session
-  -> مصرف یک‌بارۀ state
-  -> exchange کد در backend با client_secret_basic + PKCE
-  -> envelope encryption کردن access/refresh token پیش از D1
-```
+- `Account → Workers Scripts → Edit` روی یک account مشخص
+- `Zone → DNS → Edit` روی یک zone مشخص
+- `Zone → Zone → Read` روی همان zone
 
-برای هر مقدار یک DEK تصادفی ساخته می‌شود؛ داده با DEK و AES-256-GCM رمز و خود DEK با KEK موجود در Worker Secret wrap می‌شود. هر envelope AAD متفاوت دارد؛ ciphertext متعلق به tenant/connection دیگر قابل جابه‌جایی نیست.
+جریان اتصال:
 
-## ۴) جریان provisioning
+1. user با لینک یک‌بارمصرف Telegram وارد پنل HTTPS می‌شود.
+2. Token را در input نوع password وارد می‌کند.
+3. Browser با same-origin POST به `POST /api/v1/cloudflare/api-token` می‌فرستد.
+4. Worker session، origin، اندازهٔ body و rate limit را بررسی می‌کند.
+5. Token با `/user/tokens/verify` اعتبارسنجی می‌شود.
+6. V13 zoneهای active قابل‌مشاهده را می‌خواند و دقیقاً یک zone را می‌پذیرد.
+7. دسترسی خواندن DNS و Workers به‌شکل غیرمخرب preflight می‌شود.
+8. account و zone کشف‌شده در connection ذخیره می‌شوند و تمام deploymentها به این boundary محدود می‌مانند.
+9. Token با AES-256-GCM و AAD مخصوص connection رمز و در D1 ذخیره می‌شود.
+10. `expires_at` برابر زودترین زمان بین TTL محلی و انقضای خود Token است.
+11. پس از پایان، شکست، revoke/لغو یا disconnect، ciphertext scrub می‌شود. Scheduled Worker هر پنج دقیقه timeoutها را پاک می‌کند.
 
-### Prepare Workflow
+Authentication فقط با این header در client محدود سرور انجام می‌شود:
 
-1. deployment با وضعیت `queued` ایجاد می‌شود.
-2. zone از API کلادفلر بررسی می‌شود که active و متعلق به account انتخابی باشد.
-3. رکورد A برای `node.example.com` به IP عمومی VPS، با `proxied=false`، upsert می‌شود.
-4. Worker داده با config حالت pending آپلود می‌شود.
-5. Custom Domain اشتراک به Worker متصل می‌شود.
-6. وضعیت به `awaiting_agent` می‌رود.
+`Authorization: Bearer <token>`
 
-### Bootstrap عامل
+هیچ endpoint عمومی برای path یا method دلخواه Cloudflare وجود ندارد. عملیات allowlist‌شده فقط verify token، zone discovery، DNS، Workers scripts و Workers custom domain هستند.
 
-1. کاربر فقط فایل اسکریپت یک‌بارمصرف را دانلود و **قبل از اجرا بررسی** می‌کند.
-2. اسکریپت archive رسمی sing-box `1.14.0` را دریافت و SHA-256 pinشده را کنترل می‌کند.
-3. UUID، Reality keypair، short ID، رمز Hysteria2 و agent token روی خود VPS تولید می‌شوند.
-4. server config ساخته و با `sing-box check` بررسی می‌شود.
-5. فقط بعد از check موفق، systemd service جایگزین/فعال می‌شود.
-6. private key مربوط به Reality هرگز VPS را ترک نمی‌کند.
-7. callback فقط public key و credentialهای client لازم را با HTTPS می‌فرستد.
-8. bootstrap token مصرف و باطل می‌شود.
+## ۳. جریان استقرار
 
-### Finalize Workflow
+### Prepare
 
-1. bundle رمز‌شده از D1 باز می‌شود.
-2. دو پروفایل واقعی client ساخته می‌شوند.
-3. Data-plane Worker با `secret_text` به‌روزرسانی می‌شود.
-4. subscription token فقط به‌صورت hash داخل data plane قرار می‌گیرد.
-5. وضعیت `ready` و اعلان بدون credential به تلگرام فرستاده می‌شود.
+1. tenant و connection در queryهای browser محدود می‌شوند.
+2. account/zone ورودی باید با resource boundary ذخیره‌شدهٔ Token برابر باشد.
+3. zone مجدداً از Cloudflare خوانده و active بودن آن بررسی می‌شود.
+4. hostnameها باید زیر همان zone باشند.
+5. deployment و secret bundle رمز‌شده ایجاد می‌شوند.
+6. Workflow رکورد A مربوط به VPS را به حالت DNS-only می‌سازد.
+7. data-plane Worker در حالت pending آپلود و custom domain متصل می‌شود.
+8. وضعیت به `awaiting_agent` می‌رسد.
 
-## ۵) پروتکل‌ها
+### Bootstrap VPS
 
-- **VLESS Reality**: TCP/443، flow برابر `xtls-rprx-vision`، کلید خصوصی فقط سرور.
-- **Hysteria2**: UDP/443، گواهی ACME برای node hostname، certificate provider جدید sing-box 1.14.
+1. پنل token یک‌بارمصرف و چهار فرمان download/inspect/execute/erase نمایش می‌دهد.
+2. token در D1 فقط به‌شکل hash و دارای TTL نگه‌داری می‌شود.
+3. bootstrap فقط Debian/Ubuntu و معماری پشتیبانی‌شده را می‌پذیرد.
+4. باینری sing-box نسخهٔ pin‌شده بعد از SHA-256 نصب می‌شود.
+5. config با `sing-box check` اعتبارسنجی و سرویس فعال می‌شود.
+6. عامل نتیجه و secretهای تولیدشده را به endpoint احراز‌شده برمی‌گرداند.
 
-هیچ URI برای TUIC، SS2022، ECH، WireGuard قدیمی، gRPC یا XHTTP ساخته نمی‌شود؛ چون backend آن‌ها در MVP نصب نشده است.
+### Finalize
 
-## ۶) مرزهای اعتماد
+1. گزارش عامل از نظر deployment، token و schema بررسی می‌شود.
+2. config نهایی فقط با profileهای واقعاً نصب‌شده ساخته می‌شود.
+3. data-plane با bindingهای secret به‌روزرسانی می‌شود.
+4. deployment به `ready` می‌رود.
+5. اگر connection کار فعال دیگری ندارد، نسخهٔ ذخیره‌شدهٔ API Token فوراً پاک می‌شود.
 
-| مرز | دادهٔ مجاز | دادهٔ ممنوع |
+### Revoke / لغو
+
+1. credential اشتراک rotate می‌شود.
+2. data plane به bundle غیرفعال تغییر می‌کند.
+3. bootstrap token حذف و deployment به `revoked` می‌رود.
+4. connection موقت در صورت نبود کار فعال دیگر scrub می‌شود.
+
+## ۴. مدل داده و tenant isolation
+
+- routeهای browser بعد از authentication از `tenantId` نشست استفاده می‌کنند.
+- connection یا deployment متعلق به tenant دیگر با ID قابل دسترسی نیست.
+- connection نوع `api_token` به `resource_account_id` و `resource_zone_id` مشخص قفل می‌شود.
+- API account/zone برای Token از boundary ذخیره‌شده پاسخ می‌دهد و resource دلخواه را قبول نمی‌کند.
+- Workflow فقط deployment ذخیره‌شده را بارگذاری می‌کند.
+- نام قدیمی جدول/ستون‌های `oauth_connections` و `oauth_connection_id` برای migration سازگار باقی مانده است؛ `auth_type='api_token'` روش فعال را مشخص می‌کند.
+
+## ۵. مرزهای secret
+
+| مسیر | دادهٔ مجاز | دادهٔ ممنوع |
 |---|---|---|
-| Telegram | شناسه، نام، اعلان وضعیت، لینک ورود کوتاه‌عمر | CF token، رمز root، subscription URL |
-| Browser ↔ Control Plane | session امن، OAuth، درخواست استقرار | secret در URL به‌جز login token یک‌بارمصرف |
-| Control Plane ↔ Cloudflare | access token OAuth رمزگشایی‌شده فقط در حافظهٔ invocation | Global API Key |
-| VPS ↔ Control Plane | bootstrap/agent bearer روی HTTPS | Reality private key |
-| Data-plane Worker | hash اشتراک + config در secret binding | CF OAuth token، VPS root credential |
+| Telegram | لینک ورود کوتاه‌عمر، وضعیت کلی | API Token، subscription، VPS password |
+| Browser ↔ Control Plane | session cookie و فرم HTTPS Token | secret در URL یا third-party origin |
+| D1 | ciphertext Token و bundle، hash tokenها، resource ID | plaintext API Token |
+| Control Plane ↔ Cloudflare | Bearer Token فقط برای endpointهای ثابت | proxy عمومی، log credential |
+| Data-plane Worker | hash اشتراک و config لازم | API Token، root credential |
+| VPS | config سرویس و agent token محدود | Telegram bot token، Cloudflare credential |
 
-## ۷) مدل چندکاربری
+## ۶. محدودیت شبکه
 
-تمام queryهای کاربر با `tenant_id` محدود می‌شوند. connection، deployment و subscription متعلق به tenant هستند. مسیر Agent با bearer مستقل احراز می‌شود و به session کاربر اتکا ندارد. مسیر admin عمومی وجود ندارد؛ اگر در آینده اضافه شود باید پشت Cloudflare Access و allowlist جدا قرار گیرد.
+V13 دو transport متفاوت فراهم می‌کند، اما اگر هیچ مسیر قابل‌دسترسی تا Cloudflare یا VPS خارجی وجود نداشته باشد، اتصال قابل تضمین نیست. resilience باید از شبکه‌های هدف به‌صورت واقعی آزمایش شود.

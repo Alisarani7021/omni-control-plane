@@ -8,7 +8,7 @@ import {
 } from "./security";
 
 export interface CreateDeploymentInput {
-  oauthConnectionId: string;
+  connectionId: string;
   accountId: string;
   zoneId: string;
   workerName: string;
@@ -30,7 +30,7 @@ function requiredString(value: unknown, field: string, max = 253): string {
 export function validateCreateDeployment(input: unknown): CreateDeploymentInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new HttpError(400, "invalid_input", "Expected an object");
   const body = input as Record<string, unknown>;
-  const oauthConnectionId = requiredString(body.oauthConnectionId, "oauthConnectionId", 36);
+  const connectionId = requiredString(body.connectionId ?? body.oauthConnectionId, "connectionId", 36);
   const accountId = requiredString(body.accountId, "accountId", 32);
   const zoneId = requiredString(body.zoneId, "zoneId", 32);
   const workerName = requiredString(body.workerName, "workerName", 64);
@@ -39,7 +39,7 @@ export function validateCreateDeployment(input: unknown): CreateDeploymentInput 
   const vpsIpv4 = requiredString(body.vpsIpv4, "vpsIpv4", 15);
   const acmeEmail = requiredString(body.acmeEmail, "acmeEmail", 254);
   const realityServerName = requiredString(body.realityServerName, "realityServerName");
-  if (!/^[0-9a-f-]{36}$/u.test(oauthConnectionId)) throw new HttpError(400, "invalid_input", "oauthConnectionId is invalid");
+  if (!/^[0-9a-f-]{36}$/u.test(connectionId)) throw new HttpError(400, "invalid_input", "connectionId is invalid");
   if (!isValidCloudflareId(accountId) || !isValidCloudflareId(zoneId)) throw new HttpError(400, "invalid_input", "Cloudflare IDs are invalid");
   if (!isValidWorkerName(workerName)) throw new HttpError(400, "invalid_input", "workerName must use lowercase letters, digits and hyphens");
   if (!isValidHostname(workerHostname) || !isValidHostname(nodeHostname) || !isValidHostname(realityServerName)) {
@@ -49,7 +49,7 @@ export function validateCreateDeployment(input: unknown): CreateDeploymentInput 
   if (!isPublicIpv4(vpsIpv4)) throw new HttpError(400, "invalid_input", "Only a globally routable public IPv4 address is accepted in this release");
   if (!isValidEmail(acmeEmail)) throw new HttpError(400, "invalid_input", "ACME email is invalid");
   return {
-    oauthConnectionId,
+    connectionId,
     accountId,
     zoneId,
     workerName,

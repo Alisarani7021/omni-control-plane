@@ -1,546 +1,159 @@
-# نصب V13 از صفر مطلق — راهنمای مرحله‌به‌مرحله
+# نصب V13 از صفر — راهنمای موبایل و Codespaces
 
-این راهنما فرض می‌کند تجربهٔ قبلی ندارید. فرمان‌ها را به‌ترتیب اجرا کنید. هرجا کلمهٔ `example.com`، نام ربات یا ID می‌بینید باید مقدار خودتان را قرار دهید.
+این راهنما مسیر فعال **Scoped Cloudflare API Token** را توضیح می‌دهد. OAuth Client و Global API Key لازم نیست.
 
-> **نکتهٔ حیاتی:** V13 نسخهٔ زندهٔ قدیمی را خودکار تغییر نمی‌دهد. ابتدا credentialهای افشاشده را باطل کنید؛ سپس V13 را جداگانه deploy و آزمایش کنید؛ در پایان route نسخهٔ قدیمی را ببندید.
+> API Token فقط داخل فرم HTTPS پنل وارد می‌شود؛ هرگز آن را در Terminal، Telegram، چت یا screenshot قرار ندهید.
 
----
+## پیش‌نیازها
 
-## فاز صفر — همین الآن رخنهٔ نسخهٔ قبلی را مهار کنید
+- حساب Cloudflare با یک domain فعال
+- Telegram bot ساخته‌شده با BotFather
+- GitHub Codespace با Node.js 22.12 یا جدیدتر
+- VPS Debian/Ubuntu با IPv4 عمومی و دسترسی root در Termius
+- یک hostname برای کنترل‌پلین، مانند `control.example.com`
 
-### ۰.۱) Token ربات تلگرام قدیمی را باطل کنید
-
-1. در Telegram حساب رسمی **@BotFather** را باز کنید.
-2. پیام `/revoke` را بفرستید.
-3. ربات قدیمی را از فهرست انتخاب کنید.
-4. BotFather اعلام می‌کند token قبلی باطل شده است.
-5. پیام `/token` را بفرستید، همان ربات را انتخاب و token جدید را فقط در password manager ذخیره کنید.
-6. token را در این گفتگو، Git، screenshot یا فایل سورس نفرستید.
-
-اگر قصد دارید یک ربات کاملاً جدید بسازید، باز هم token ربات قدیمی را revoke کنید.
-
-### ۰.۲) Cloudflare credentialهای قدیمی را باطل کنید
-
-1. به `https://dash.cloudflare.com/profile/api-tokens` بروید.
-2. تمام API Tokenهایی را که در ربات/چت/Worker قبلی وارد شده‌اند پیدا کنید.
-3. آن‌ها را **Roll** یا **Delete** کنید.
-4. اگر Global API Key جایی کپی شده، آن را نیز rotate کنید و MFA حساب را بررسی کنید.
-5. در Cloudflare Audit Logs دنبال deploy، DNS change یا token activity ناشناس بگردید.
-
-### ۰.۳) Worker قدیمی را از دسترس خارج کنید
-
-در Cloudflare Dashboard:
-
-1. به **Workers & Pages** بروید.
-2. Worker قدیمی را انتخاب کنید.
-3. در **Settings → Domains & Routes**، route/custom domain عمومی را موقتاً حذف کنید یا Worker را غیرفعال کنید.
-4. اگر خاموشی فوری ممکن نیست، حداقل مسیرهای `/setwebhook`، `/sub`، `/profile` و API مدیریتی آن را از route عمومی خارج کنید.
-
-نسخهٔ قدیمی را با V13 overwrite نکنید؛ نام مستقل مثل `v13-control-plane` استفاده کنید تا rollback و مقایسه ممکن باشد.
-
----
-
-## فاز یک — چیزهایی که باید شخصاً تهیه کنید
-
-این موارد به حساب، پرداخت یا تصمیم شخصی شما نیاز دارند و ربات نمی‌تواند به‌جای شما انجام دهد:
-
-1. **حساب Cloudflare** با MFA فعال.
-2. **یک دامنهٔ active در Cloudflare**؛ مثلاً `example.com`.
-3. **یک VPS** با Ubuntu 24.04 LTS یا Debian 12، IPv4 عمومی، دسترسی root/sudo و systemd.
-4. **حساب Telegram** و ربات BotFather.
-5. یک رایانه برای deploy با Node.js `22.12` یا جدیدتر، Git و terminal.
-
-V13 خرید VPS یا پرداخت را انجام نمی‌دهد. بعد از اینکه IP را دارید، ساخت DNS، Worker داده، نصب sing-box، تولید credential، validation و health reporting خودکار است.
-
-### ۱.۱) نام‌ها را قبل از شروع انتخاب کنید
-
-نمونهٔ این راهنما:
-
-| کاربرد | نمونه | مقدار شما |
-|---|---|---|
-| دامنهٔ اصلی | `example.com` | یادداشت کنید |
-| کنترل‌پلین | `control.example.com` | یادداشت کنید |
-| نام Worker کنترل | `v13-control-plane` | بهتر است همین بماند |
-| ربات | `MyV13Bot` | یادداشت کنید |
-| username ربات | `my_v13_bot` | باید به `bot` ختم شود |
-| node هر کاربر | `node.example.com` | بعداً در پنل |
-| subscription Worker | `sub.example.com` | بعداً در پنل |
-
-`control`، `node` و `sub` باید متفاوت باشند.
-
----
-
-## فاز دو — ساخت و ایمن‌سازی ربات در BotFather
-
-### برای ربات جدید
-
-1. @BotFather را باز کنید.
-2. `/newbot` را بفرستید.
-3. یک نام نمایشی وارد کنید؛ مثلاً `V13 Control Plane`.
-4. یک username یکتا که به `bot` ختم شود وارد کنید؛ مثلاً `my_v13_bot`.
-5. token دریافتی را در password manager بگذارید.
-
-### تنظیم command
-
-1. `/setcommands` را بفرستید.
-2. ربات را انتخاب کنید.
-3. دقیقاً این متن را بفرستید:
-
-```text
-start - ورود امن به پنل V13
-```
-
-### جلوگیری از استفادهٔ ناخواسته در گروه
-
-1. `/setjoingroups` را بفرستید.
-2. ربات را انتخاب کنید.
-3. **Disable** را انتخاب کنید.
-
-کد V13 نیز فقط پیام private را قبول می‌کند؛ این تنظیم لایهٔ دفاعی دوم است.
-
----
-
-## فاز سه — آماده‌کردن رایانهٔ deploy
-
-### ۳.۱) بررسی Node
+## ۱. بررسی سورس
 
 ```bash
-node --version
-npm --version
-```
-
-نسخهٔ Node باید حداقل `v22.12.0` باشد. اگر نصب نیست، از `https://nodejs.org/` نسخهٔ LTS را نصب کنید و terminal را دوباره باز کنید.
-
-### ۳.۲) ورود به پوشهٔ پروژه
-
-```bash
-cd v13-control-plane
+cd /workspaces/v13-control-plane
 npm ci
-npm audit --audit-level=moderate
-```
-
-`npm ci` دقیقاً نسخه‌های قفل‌شده در `package-lock.json` را نصب می‌کند. اگر audit آسیب‌پذیری جدید گزارش کرد، بدون بررسی کورکورانه `--force` نزنید؛ ابتدا advisory و سازگاری را بررسی کنید.
-
-### ۳.۳) ورود Wrangler به Cloudflare
-
-```bash
-npx wrangler login
-```
-
-1. مرورگر باز می‌شود.
-2. حساب Cloudflare را انتخاب کنید.
-3. دسترسی Wrangler را تأیید کنید.
-4. به terminal برگردید.
-
-این login فقط برای deploy کنترل‌پلین خود شماست؛ کاربران نهایی از OAuth جداگانه استفاده می‌کنند.
-
----
-
-## فاز چهار — ساخت D1
-
-در terminal:
-
-```bash
-npx wrangler d1 create v13-control-plane
-```
-
-خروجی شامل `database_id` است. آن را کپی کنید.
-
-فایل `wrangler.jsonc` را باز کنید و این مقدار را عوض کنید:
-
-```json
-"database_id": "REPLACE_WITH_D1_DATABASE_ID"
-```
-
-مثلاً:
-
-```json
-"database_id": "0123456789abcdef0123456789abcdef"
-```
-
-سپس migration را روی D1 واقعی اعمال کنید:
-
-```bash
-npx wrangler d1 migrations apply v13-control-plane --remote
-```
-
-Wrangler فهرست migration را نشان می‌دهد؛ تأیید کنید. باید `0001_init.sql` با وضعیت موفق دیده شود.
-
----
-
-## فاز پنج — تنظیم مقادیر غیرمحرمانه
-
-فایل `wrangler.jsonc` را باز کنید.
-
-### ۵.۱) custom domain کنترل‌پلین
-
-این قسمت:
-
-```json
-"routes": [
-  { "pattern": "control.example.com", "custom_domain": true }
-]
-```
-
-را به hostname واقعی خودتان تغییر دهید.
-
-### ۵.۲) متغیرها
-
-در `vars`:
-
-- `PUBLIC_BASE_URL`: دقیقاً `https://control.your-domain.com`؛ بدون slash انتهایی.
-- `BOT_USERNAME`: username بدون `@`.
-- `ADMIN_TELEGRAM_IDS`: فعلاً می‌تواند خالی بماند؛ endpoint admin در این release وجود ندارد.
-- `SING_BOX_VERSION`: روی `1.14.0` بماند.
-- TTLها را در اولین نصب تغییر ندهید.
-- `CF_OAUTH_CLIENT_ID` فعلاً placeholder بماند تا OAuth client ساخته شود.
-
-**هیچ secretی را در این فایل نگذارید.**
-
----
-
-## فاز شش — ساخت secretهای تصادفی و ثبت Worker Secret
-
-### ۶.۱) تولید مقادیر تصادفی
-
-```bash
-node scripts/generate-secrets.mjs
-```
-
-دو مقدار می‌بینید:
-
-- `TELEGRAM_WEBHOOK_SECRET`
-- `TOKEN_ENCRYPTION_KEY`
-
-آن‌ها را مستقیم در password manager ذخیره کنید. `TOKEN_ENCRYPTION_KEY` باید base64url دقیقاً ۳۲ بایت تصادفی باشد.
-
-### ۶.۲) ثبت secretها با prompt امن Wrangler
-
-برای هر فرمان، Wrangler مقدار را مخفیانه می‌پرسد:
-
-```bash
-npx wrangler secret put TELEGRAM_BOT_TOKEN
-npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
-npx wrangler secret put TOKEN_ENCRYPTION_KEY
-```
-
-در اولی token جدید BotFather، در دومی secret تولیدشده و در سومی encryption key را paste کنید.
-
-هنوز `CF_OAUTH_CLIENT_SECRET` ندارید؛ در فاز OAuth اضافه می‌شود.
-
----
-
-## فاز هفت — تست کامل قبل از اولین deploy
-
-```bash
+node --version
 npm run preflight
 npm run lint
 npm run typecheck
 npm test
-npm run verify:sing-box
-npm run build
 ```
 
-انتظار:
+انتظار: Node 22.12+، صفر warning/error و همهٔ testها سبز.
 
-- preflight: الگوهای قدیمی/hardcoded پیدا نشود.
-- lint/typecheck/test: بدون error.
-- verify: هر سه fixture سرور، VLESS client و Hysteria2 client با sing-box 1.14.0 معتبر باشند.
-- build: dry-run موفق باشد.
+## ۲. تنظیم `wrangler.jsonc`
 
-`verify:sing-box` archive رسمی را دانلود می‌کند اما قبل از اجرا SHA-256 ثابت را بررسی می‌کند.
+مقدارهای واقعی زیر را نگه دارید یا تنظیم کنید:
 
----
+- `routes[0].pattern`
+- `vars.PUBLIC_BASE_URL`
+- `vars.BOT_USERNAME`
+- `d1_databases[0].database_id`
+- `ADMIN_TELEGRAM_IDS`
 
-## فاز هشت — اولین deploy برای فعال‌شدن دامنهٔ کنترل
-
-```bash
-npx wrangler deploy
-```
-
-بعد از پایان:
-
-```bash
-curl -i https://control.your-domain.com/healthz
-```
-
-باید status `200` و JSON شبیه زیر ببینید:
+TTL و cron لازم:
 
 ```json
-{"ok":true,"service":"v13-control-plane","version":13}
+"triggers": {
+  "crons": ["*/5 * * * *"]
+},
+"vars": {
+  "API_TOKEN_TTL_SECONDS": "7200"
+}
 ```
 
-همچنین صفحهٔ اصلی را در مرورگر باز کنید. Custom Domain Worker باید DNS و TLS را از Cloudflare بگیرد؛ صدور certificate ممکن است چند دقیقه طول بکشد.
+هیچ API Token واقعی در `wrangler.jsonc` قرار ندهید.
 
-در این مرحله دکمهٔ OAuth عمداً هنوز کار نمی‌کند، چون client ساخته نشده است.
+## ۳. D1
 
----
-
-## فاز نه — ساخت Cloudflare OAuth Client با حداقل scope
-
-مستند رسمی: `https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/`
-
-1. وارد Cloudflare Dashboard شوید.
-2. account میزبان OAuth client را انتخاب کنید.
-3. به **Manage Account → OAuth clients** بروید.
-4. **Create client** را بزنید.
-5. مقادیر زیر را تنظیم کنید:
-
-| فیلد | مقدار |
-|---|---|
-| Client name | `V13 Control Plane` |
-| Response type | `code` |
-| Grant type | `authorization_code` |
-| Token endpoint authentication | `client_secret_basic` |
-| Redirect URL | `https://control.your-domain.com/oauth/cloudflare/callback` |
-| Client URL | `https://control.your-domain.com/` |
-| Privacy URL | `https://control.your-domain.com/privacy` |
-| Terms URL | `https://control.your-domain.com/terms` |
-
-Redirect URL باید **کاراکتر‌به‌کاراکتر** با `PUBLIC_BASE_URL + /oauth/cloudflare/callback` برابر باشد.
-
-### ۹.۱) scopeهای لازم
-
-در صفحهٔ انتخاب scope فقط permissionهای متناظر با این عملیات را انتخاب کنید:
-
-1. **Account Settings Read** — فهرست accountهای کاربر.
-2. **Zone Read** — بررسی zone و تعلق آن به account.
-3. **DNS Write** — ساخت/به‌روزرسانی A record مستقیم VPS.
-4. **Workers Scripts Write** — آپلود Worker داده، secret binding و اتصال custom domain.
-
-اگر Dashboard برای custom domain مجوز جداگانهٔ **Workers Routes Write** درخواست کرد، فقط همان را نیز اضافه کنید. مجوزهای Billing، API Tokens Write، Access Write، Member Write، R2، KV یا permission نامرتبط را ندهید.
-
-تمام scopeهای لازم را Required نگه دارید؛ feature بدون یکی از آن‌ها ناقص می‌شود.
-
-### ۹.۲) عمومی‌کردن برای چندکاربر
-
-OAuth client ابتدا private است و فقط اعضای account سازنده می‌توانند آن را authorize کنند. برای اینکه «هر کاربر» بتواند استفاده کند:
-
-1. لوگو، Client URL و scopeها را کامل کنید.
-2. در تنظیم OAuth client گزینهٔ **Change Visibility / Public** را انتخاب کنید.
-3. Cloudflare یک TXT verification با پیشوند `cloudflare_oauth_client_publisher=` می‌دهد.
-4. به **DNS → Records → Add record** بروید.
-5. نوع `TXT`، نام و مقدار دقیق داده‌شده را وارد کنید.
-6. ذخیره و منتظر verification بمانید.
-7. سپس visibility را Public کنید.
-
-طبق مستند Cloudflare، عمومی‌کردن برگشت‌پذیر نیست؛ قبل از تأیید نام، دامنه، privacy و terms را دوباره بررسی کنید.
-
-### ۹.۳) ثبت Client ID و Secret
-
-Cloudflare secret را فقط یک بار نشان می‌دهد:
-
-1. Client ID را در password manager ذخیره کنید.
-2. Client Secret را در password manager ذخیره کنید.
-3. در `wrangler.jsonc` مقدار `CF_OAUTH_CLIENT_ID` را با Client ID جایگزین کنید. Client ID محرمانه نیست.
-4. secret را با prompt ثبت کنید:
+برای نصب تازه:
 
 ```bash
-npx wrangler secret put CF_OAUTH_CLIENT_SECRET
+npx wrangler d1 create v13-control-plane
+npx wrangler d1 migrations apply v13-control-plane --remote
 ```
 
-5. دوباره deploy کنید:
+برای production موجود ابتدا backup و بعد migration:
 
 ```bash
-npm run check
-npx wrangler deploy
+mkdir -p backups
+npx wrangler d1 export v13-control-plane --remote --output backups/pre-api-token.sql
+npx wrangler d1 migrations apply v13-control-plane --remote
 ```
 
----
+باید `0001_init.sql` و `0002_temporary_api_token.sql` applied باشند. backup را عمومی یا commit نکنید.
 
-## فاز ده — ثبت امن Telegram Webhook
+## ۴. Worker Secretها
 
-V13 هیچ `/setwebhook` عمومی ندارد. webhook را یک بار از رایانهٔ خودتان با script محلی ثبت کنید.
-
-برای جلوگیری از ثبت secret در history:
+Bot token را در prompt مخفی وارد کنید:
 
 ```bash
-read -rsp 'Telegram bot token: ' TELEGRAM_BOT_TOKEN; echo
-read -rsp 'Telegram webhook secret: ' TELEGRAM_WEBHOOK_SECRET; echo
-export TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET
-export PUBLIC_BASE_URL='https://control.your-domain.com'
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+```
+
+کلید رمزگذاری بدون چاپ روی صفحه:
+
+```bash
+node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))" | npx wrangler secret put TOKEN_ENCRYPTION_KEY
+```
+
+Telegram webhook secret:
+
+```bash
+export TELEGRAM_WEBHOOK_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))")"
+printf %s "$TELEGRAM_WEBHOOK_SECRET" | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
+```
+
+## ۵. build و deploy
+
+```bash
+npm run build
+npm run deploy
+```
+
+## ۶. ثبت webhook تلگرام
+
+```bash
+read -rsp "Bot token: " TELEGRAM_BOT_TOKEN; echo
+export TELEGRAM_BOT_TOKEN
+export PUBLIC_BASE_URL="https://control.example.com"
 node scripts/set-telegram-webhook.mjs
 unset TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET PUBLIC_BASE_URL
 ```
 
-انتظار: `Telegram webhook registered successfully.`
+فقط hostname نمونه را تغییر دهید. خروجی موفق secret را چاپ نمی‌کند.
 
-این script:
+## ۷. ساخت Scoped API Token توسط هر کاربر
 
-- URL را فقط روی `/telegram/webhook` می‌گذارد.
-- `secret_token` را به Telegram می‌دهد تا header امنیتی ارسال شود.
-- فقط update نوع `message` را می‌خواهد.
-- updateهای pending قدیمی را حذف می‌کند.
-- هیچ secretی چاپ نمی‌کند.
+این بخش فقط داخل Cloudflare Dashboard انجام می‌شود:
 
-برای بررسی وضعیت webhook بدون چاپ token در history می‌توانید Bot API را با همان روش `read -s` و endpoint `getWebhookInfo` صدا بزنید؛ پاسخ نباید token را شامل شود.
+1. `My Profile → API Tokens`
+2. `Create Token`
+3. پایین صفحه `Create Custom Token`
+4. نام Token: `V13 temporary provisioning`
+5. Permission اول: `Account → Workers Scripts → Edit`
+6. Permission دوم: `Zone → DNS → Edit`
+7. Permission سوم: `Zone → Zone → Read`
+8. `Account Resources → Include → Specific account` و فقط حساب موردنظر
+9. `Zone Resources → Include → Specific zone` و فقط یک domain موردنظر
+10. `Client IP Address Filtering` را خالی بگذارید؛ Worker IP خروجی ثابت ندارد.
+11. در صورت تمایل TTL خود Cloudflare را کوتاه، مثلاً ۲۴ ساعت، تنظیم کنید.
+12. `Continue to summary → Create Token`
+13. Token فقط یک بار نمایش داده می‌شود؛ آن را مستقیم در password input پنل HTTPS Paste کنید.
+14. Token را در Telegram، Terminal یا screenshot قرار ندهید.
 
----
+V13 Tokenهایی را که بیش از یک zone active نشان دهند رد می‌کند تا resource boundary محدود بماند.
 
-## فاز یازده — آماده‌سازی VPS
+## ۸. اولین استقرار
 
-### ۱۱.۱) شرط‌های VPS
+1. در Telegram به ربات `/start` بدهید.
+2. لینک ورود کوتاه‌عمر را باز کنید.
+3. Scoped API Token را در فرم HTTPS وارد و «بررسی دسترسی» را بزنید.
+4. account و zone قفل‌شده را از فهرست انتخاب کنید.
+5. مشخصات VPS و hostnameها را وارد و provisioning را شروع کنید.
+6. چهار فرمان bootstrap را در Termius به‌ترتیب download، inspect، execute و erase اجرا کنید.
+7. پنل باید `ready` و subscriptionهای خصوصی را نشان دهد.
+8. connection موقت پس از پایان ناپدید می‌شود.
+9. برای ابطال واقعی، Token را در Cloudflare API Tokens حذف کنید.
 
-- Ubuntu 24.04 یا Debian 12.
-- CPU `x86_64/amd64` یا `aarch64/arm64`.
-- IPv4 عمومی واقعی؛ IP خصوصی/CGNAT پذیرفته نمی‌شود.
-- systemd، curl، python3، openssl و sha256sum.
-- دسترسی sudo/root.
-- نبود سرویس متعارض روی TCP/443، UDP/443 و برای ACME روی TCP/80.
-
-در VPS بررسی کنید:
-
-```bash
-uname -m
-cat /etc/os-release
-sudo ss -lntup | grep -E ':(80|443)\b' || true
-```
-
-اگر Nginx/Caddy/Apache روی 80 یا 443 دارید، بدون برنامه آن را حذف نکنید؛ VPS جدا برای V13 امن‌تر است.
-
-### ۱۱.۲) firewall پنل ارائه‌دهنده
-
-در dashboard شرکت VPS inboundهای زیر را باز کنید:
-
-- پورت SSH فعلی روی TCP، ترجیحاً فقط از IP مدیریتی شما.
-- TCP/80 از اینترنت برای ACME challenge.
-- TCP/443 از اینترنت برای VLESS Reality.
-- UDP/443 از اینترنت برای Hysteria2.
-
-اگر provider و سیستم‌عامل هر دو firewall دارند، هر دو باید اجازه دهند.
-
-### ۱۱.۳) به‌روزرسانی پایهٔ سیستم
-
-برای Ubuntu/Debian:
+## ۹. بررسی پاک‌سازی بدون مشاهدهٔ ciphertext
 
 ```bash
-sudo apt update
-sudo apt upgrade -y
-sudo apt install -y curl ca-certificates python3 openssl
-sudo timedatectl set-ntp true
+npx wrangler d1 execute v13-control-plane --remote --command "SELECT auth_type, COUNT(*) AS active FROM oauth_connections WHERE revoked_at IS NULL GROUP BY auth_type;"
 ```
 
-پیش از upgrade مهم، snapshot بگیرید.
+connection موقت بدون deployment فعال باید صفر باشد. ستون `access_token_enc` را query یا screenshot نکنید.
 
----
+## ۱۰. VPS و شبکه
 
-## فاز دوازده — اولین استفادهٔ واقعی
-
-1. در Telegram ربات را باز کنید.
-2. `/start` را بفرستید.
-3. لینک یک‌بارمصرف را بزنید. لینک معمولاً ۱۰ دقیقه اعتبار و فقط یک بار مصرف دارد.
-4. در پنل **اتصال با OAuth** را بزنید.
-5. در Cloudflare account/zone موردنظر و فقط scopeهای نشان‌داده‌شده را تأیید کنید.
-6. به پنل برگردید.
-7. فرم استقرار را پر کنید:
-   - اتصال OAuth.
-   - account و zone.
-   - Worker name مثل `v13-paris-01`.
-   - Worker hostname مثل `sub.example.com`.
-   - Node hostname مثل `node.example.com`.
-   - IPv4 عمومی VPS.
-   - ایمیل واقعی ACME.
-   - Reality target مثل `www.microsoft.com` که از VPS قابل دسترس است.
-   - UFW را فقط اگر می‌خواهید V13 آن را فعال کند انتخاب کنید.
-8. **شروع provisioning** را بزنید.
-
-Control Plane اکنون خودش zone را verify، DNS را upsert، Worker داده را upload و custom domain را attach می‌کند.
-
-### ۱۲.۱) اجرای چهار فرمان VPS
-
-پنل چهار فرمان می‌دهد:
-
-1. دریافت script با Authorization bearer.
-2. بررسی script با `less`.
-3. اجرای script با sudo.
-4. حذف امن فایل.
-
-همان‌ها را دقیقاً و به‌ترتیب روی VPS اجرا کنید. **مرحلهٔ بررسی را حذف نکنید.** token bootstrap فقط همان deployment را bootstrap می‌کند، کوتاه‌عمر و یک‌بارمصرف است.
-
-اسکریپت به‌طور خودکار:
-
-- sing-box 1.14.0 را از release رسمی دریافت می‌کند.
-- SHA-256 ثابت معماری را verify می‌کند.
-- کلیدها و رمزها را محلی می‌سازد.
-- config را با schema جدید certificate provider می‌نویسد.
-- `sing-box check` را اجرا می‌کند.
-- systemd hardening را فعال می‌کند.
-- callback امن را می‌فرستد.
-- health timer پنج‌دقیقه‌ای را نصب می‌کند.
-
-هیچ password SSH/root به ربات یا Worker داده نمی‌شود.
-
-### ۱۲.۲) انتظار برای وضعیت ready
-
-بعد از اجرای موفق، پنل را refresh کنید. ترتیب معمول:
-
-```text
-awaiting_agent -> agent_ready -> finalizing -> ready
-```
-
-وقتی `ready` شد، سه URL امن می‌بینید:
-
-- URI list شامل VLESS Reality و Hysteria2.
-- sing-box VLESS profile.
-- sing-box Hysteria2 profile.
-
-این URLها credential هستند؛ در کانال عمومی منتشر نکنید. تلگرام عمداً آن‌ها را ارسال نمی‌کند.
-
----
-
-## فاز سیزده — آزمون نهایی
-
-### کنترل‌پلین
-
-```bash
-curl -i https://control.your-domain.com/healthz
-```
-
-### داده‌پلین
-
-```bash
-curl -i https://sub.example.com/healthz
-curl -i https://sub.example.com/sub/WRONG_TOKEN
-```
-
-health باید 200 باشد و token اشتباه باید 404 بدهد.
-
-### VPS
-
-```bash
-sudo systemctl is-active sing-box
-sudo systemctl is-enabled sing-box
-sudo /usr/local/bin/sing-box version
-sudo /usr/local/bin/sing-box check -c /etc/sing-box/config.json
-sudo journalctl -u sing-box -n 100 --no-pager
-```
-
-نسخه باید دقیقاً `1.14.0` باشد.
-
-### Client
-
-یکی از profileهای sing-box را import کنید. ابتدا هرکدام را جداگانه آزمایش کنید تا معلوم باشد مشکل مربوط به TCP یا UDP است.
-
----
-
-## فاز چهارده — بازنشسته‌کردن نسخهٔ قدیمی
-
-فقط بعد از موفقیت تست V13:
-
-1. route/custom domain نسخهٔ قدیمی را حذف کنید.
-2. Worker قدیمی را با label آرشیوی نگه دارید یا export کنید؛ اما عمومی نماند.
-3. KV/Secretهای قدیمی را بعد از backup و retention لازم حذف کنید.
-4. تمام tokenهای قدیمی را دوباره مرور و revoke کنید.
-5. DNS recordهای Phantom/WhiteHole/dnstt یا رکوردهای آزمایشی بلااستفاده را حذف کنید.
-
----
-
-## دربارهٔ «نت ملی» و قطع بین‌الملل
-
-V13 می‌تواند دو transport واقعی با رفتار متفاوت فراهم کند و health را اندازه بگیرد، اما اگر از شبکهٔ کاربر تا VPS خارجی هیچ مسیر IP/DNS/UDP/TCP وجود نداشته باشد، TXT record، dnstt یا نام‌گذاری خاص به‌تنهایی مسیر ایجاد نمی‌کند. بنابراین:
-
-- عملکرد باید روی ISPها و زمان‌های مختلف اندازه‌گیری شود.
-- VPS یا relay داخل زیرساخت قابل‌دسترسی قانونی ممکن است در بعضی سناریوها لازم باشد.
-- هیچ متن UI یا تبلیغ V13 نباید «تضمین اتصال در قطع کامل» بدهد.
-
-برای عملیات، rotation، عیب‌یابی و حذف، فایل `OPERATIONS-FA.md` را بخوانید.
+- TCP/443 برای VLESS Reality لازم است.
+- UDP/443 برای Hysteria2 لازم است.
+- DNS مربوط به node به‌شکل DNS-only توسط Workflow ساخته می‌شود.
+- UFW فقط وقتی فعال شود که پورت SSH فعلی مشخص است.
+- کنترل‌پلین root password را دریافت یا ذخیره نمی‌کند.
+- در قطع کامل مسیر تا Cloudflare و VPS خارجی، اتصال تضمین‌شده نیست.

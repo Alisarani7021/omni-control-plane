@@ -1,142 +1,102 @@
-# راهنمای عملیات، عیب‌یابی و حذف V13
+# راهنمای عملیات V13
 
-## بررسی روزانه
-
-1. در پنل V13 وضعیت deployment باید `ready` باشد.
-2. `last_seen_at` باید حداکثر چند دقیقه قبل باشد.
-3. در Cloudflare Dashboard بخش Workers & Pages، Worker داده و custom domain را ببینید.
-4. در VPS:
+## ۱. بررسی روزانه
 
 ```bash
-sudo systemctl status sing-box --no-pager
-sudo systemctl status v13-health-report.timer --no-pager
-sudo journalctl -u sing-box -n 100 --no-pager
-sudo /usr/local/bin/sing-box check -c /etc/sing-box/config.json
+curl --fail --silent https://control.example.com/healthz
+npx wrangler deployments list
 ```
 
-## بررسی شبکهٔ VPS
+Worker errors، D1 errors و Workflow failures را در Cloudflare بررسی کنید. log نباید API Token، subscription یا agent token داشته باشد.
+
+## ۲. وضعیت connectionهای موقت
+
+فقط metadata را بخوانید؛ ciphertext را query نکنید:
 
 ```bash
-sudo ss -lntup | grep -E ':(80|443)\b'
-dig +short node.example.com A
-curl -I https://node.example.com/  # پاسخ Hysteria2 نیست؛ فقط بررسی DNS/TCP احتمالی است
+npx wrangler d1 execute v13-control-plane --remote --command "SELECT auth_type, resource_zone_name, expires_at FROM oauth_connections WHERE revoked_at IS NULL;"
 ```
 
-برای Hysteria2 حتماً UDP/443 باید هم در firewall سیستم‌عامل و هم firewall پنل provider باز باشد. Cloudflare proxy باید برای node خاموش/خاکستری باشد؛ Workflow رکورد را با `proxied=false` می‌سازد.
+وجود connection فعال فقط هنگام deployment فعال طبیعی است. TTL پیش‌فرض دو ساعت و cron پاک‌سازی هر پنج دقیقه است.
 
-## وضعیت‌های Workflow
+## ۳. failure و retry
 
-- `queued`: instance تازه ساخته شده است.
-- `preparing`: zone، DNS و Worker داده در حال آماده‌شدن‌اند.
-- `awaiting_agent`: کار Cloudflare تمام و نوبت اجرای اسکریپت VPS است.
-- `agent_ready`: callback VPS رسید و finalize در صف است.
-- `finalizing`: subscription خصوصی در حال انتشار است.
-- `ready`: هر دو پروتکل نصب و پروفایل‌ها منتشر شده‌اند.
-- `failed`: عملیات شکست خورده؛ credential در status detail ثبت نمی‌شود.
-- `revoked`: subscription باطل شده است.
+1. وضعیت و `status_detail` را در پنل ببینید.
+2. resourceهای Token را بررسی کنید: یک account و دقیقاً یک zone.
+3. Permissionها باید `Workers Scripts Edit`، `DNS Edit` و `Zone Read` باشند.
+4. DNS، IPv4، TCP/443، UDP/443 و سرویس VPS را بررسی کنید.
+5. چون failure نسخهٔ ذخیره‌شده را پاک می‌کند، API Token معتبر را دوباره فقط در فرم HTTPS وارد کنید.
+6. connection تازه را انتخاب و retry کنید.
 
-برای log کنترل‌پلین:
+## ۴. انقضا در میانهٔ کار
+
+اگر bootstrap بیشتر از TTL طول کشید، Token را دوباره در پنل HTTPS ثبت و retry را با connection تازه اجرا کنید. اگر خود Token در Cloudflare منقضی شده، Token محدود تازه بسازید.
+
+## ۵. لغو و حذف
+
+- دکمهٔ پاک‌سازی فقط ciphertext V13 را scrub می‌کند و هنگام deployment فعال اجازه نمی‌دهد.
+- revoke deployment اشتراک را غیرفعال و سپس connection بدون کار فعال را پاک می‌کند.
+- حذف واقعی Token فقط از `My Profile → API Tokens → Revoke/Delete` انجام می‌شود.
+
+## ۶. Incident response
+
+1. API Token مربوط به V13 را فوراً در Cloudflare Revoke/Delete کنید.
+2. connection ذخیره‌شده را در V13 disconnect کنید.
+3. DNS، Workers و custom domains همان account/zone را بررسی کنید.
+4. deploymentهای غیرمنتظره را revoke کنید.
+5. sessionهای مشکوک را پاک کنید:
 
 ```bash
-npx wrangler tail v13-control-plane --format pretty
+npx wrangler d1 execute v13-control-plane --remote --command "DELETE FROM sessions; DELETE FROM login_links;"
 ```
 
-هرگز خروجی حاوی URL اشتراک یا secret را در issue عمومی نگذارید.
+6. audit را بدون استخراج ciphertext بررسی کنید.
 
-## Bootstrap token گم یا منقضی شده
-
-در پنل deployment را باز کنید و «صدور Bootstrap جدید» را بزنید. token قبلی فوراً جایگزین می‌شود. فایل را دریافت، با `less` بررسی، اجرا و بعد حذف کنید.
-
-## Finalize شکست خورده
-
-1. ابتدا VPS را بررسی کنید:
+## ۷. پاک‌سازی اجباری API Tokenهای ذخیره‌شده
 
 ```bash
-sudo systemctl is-active sing-box
-sudo /usr/local/bin/sing-box version
-sudo /usr/local/bin/sing-box check -c /etc/sing-box/config.json
+npx wrangler d1 execute v13-control-plane --remote --command "UPDATE oauth_connections SET access_token_enc='incident-erased', refresh_token_enc=NULL, expires_at=NULL, revoked_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE auth_type='api_token' AND revoked_at IS NULL;"
 ```
 
-2. از معتبر بودن OAuth و scopeها مطمئن شوید.
-3. در پنل «تلاش مجدد Workflow» را بزنید؛ سامانه بر اساس وجود callback عامل، prepare یا finalize را انتخاب می‌کند.
-4. اگر OAuth revoke شده، دوباره Cloudflare را متصل کنید؛ برای اتصال قدیمی باید feature انتخاب connection جدید اضافه شود یا deployment تازه بسازید.
+این دستور Token اصلی Cloudflare را حذف نمی‌کند.
 
-## گواهی ACME صادر نمی‌شود
-
-- `node.example.com` باید به IP VPS resolve شود.
-- رکورد باید DNS-only باشد.
-- TCP/80 باید تا VPS باز باشد.
-- سرویس دیگری نباید port 80 challenge را اشغال کرده باشد.
-- ایمیل ACME معتبر باشد.
-- log:
+## ۸. backup، release و rollback
 
 ```bash
-sudo journalctl -u sing-box -n 200 --no-pager
+mkdir -p backups
+npx wrangler d1 export v13-control-plane --remote --output "backups/d1-$(date -u +%Y%m%dT%H%M%SZ).sql"
+npm ci
+npm audit --audit-level=moderate
+npm run preflight
+npm run lint
+npm run typecheck
+npm test
+npm run verify:sing-box
+npm run build
+npx wrangler d1 migrations apply v13-control-plane --remote
+npm run deploy
 ```
 
-## Reality متصل نمی‌شود
-
-- TCP/443 باز باشد.
-- ساعت VPS درست باشد:
+Rollback Worker:
 
 ```bash
-timedatectl status
+npx wrangler deployments list
+npx wrangler rollback
 ```
 
-- مقصد handshake از VPS روی TLS/443 در دسترس باشد.
-- از profile تولیدشدهٔ همان deployment استفاده کنید؛ public/private key deploymentهای مختلف قابل ترکیب نیستند.
+Rollback Worker، schema D1 را تغییر نمی‌دهد. migration `0002` additive است.
 
-## Hysteria2 متصل نمی‌شود
-
-- UDP/443 در security group provider و UFW باز باشد.
-- certificate برای node hostname صادر شده باشد.
-- ISP/client باید UDP را عبور دهد؛ بعضی شبکه‌ها UDP را محدود می‌کنند. در آن شرایط Reality ممکن است کار کند، اما تضمین وجود ندارد.
-
-## ابطال subscription
-
-در پنل «ابطال اشتراک» را بزنید. Workflow hash توکن داده‌پلین را جایگزین و config را pending می‌کند. لینک قبلی پس از پایان Workflow باید 404/503 بگیرد. این عمل سرویس sing-box روی VPS را حذف نمی‌کند.
-
-## حذف کامل از VPS
-
-ابتدا subscription را در پنل revoke کنید، سپس روی VPS:
+## ۹. VPS
 
 ```bash
-sudo systemctl disable --now v13-health-report.timer sing-box.service
-sudo rm -f /etc/systemd/system/v13-health-report.timer
-sudo rm -f /etc/systemd/system/v13-health-report.service
-sudo rm -f /etc/systemd/system/sing-box.service
-sudo systemctl daemon-reload
-sudo rm -f /usr/local/libexec/v13-health-report.py
-sudo rm -f /usr/local/bin/sing-box
-sudo shred -u /etc/v13-agent.env 2>/dev/null || sudo rm -f /etc/v13-agent.env
-sudo shred -u /etc/sing-box/config.json 2>/dev/null || sudo rm -f /etc/sing-box/config.json
-sudo rm -rf /var/lib/sing-box /var/lib/v13-agent /etc/sing-box
-sudo userdel sing-box 2>/dev/null || true
+systemctl status sing-box --no-pager
+journalctl -u sing-box -n 100 --no-pager
+sing-box check -c /etc/sing-box/config.json
+ss -lntup | grep -E ':443\b'
 ```
 
-قانون‌های firewall را فقط وقتی حذف کنید که سرویس دیگری از آن port استفاده نمی‌کند.
+config یا credential VPS را در چت Paste نکنید. ابتدا deployment را revoke و سپس پاک‌سازی VPS را مطابق release انجام دهید.
 
-## Backup D1
+## ۱۰. وضعیت شبکه
 
-قبل از migration یا release:
-
-```bash
-npx wrangler d1 export v13-control-plane --remote --output v13-d1-backup.sql
-```
-
-فایل export ممکن است ciphertext و metadata شخصی داشته باشد. آن را رمزگذاری، دسترسی را محدود و retention تعریف کنید.
-
-## Incident response
-
-1. Worker قدیمی و routeهای ناامن را غیرفعال کنید.
-2. Telegram token را در BotFather revoke و token جدید بگیرید.
-3. OAuth client secret را rotate کنید.
-4. connectionهای مشکوک و deploymentها را revoke کنید.
-5. sessionها را حذف کنید:
-
-```bash
-npx wrangler d1 execute v13-control-plane --remote --command "DELETE FROM sessions; DELETE FROM login_links; DELETE FROM oauth_states;"
-```
-
-6. audit، Cloudflare account logs و VPS auth logs را نگه‌داری و بررسی کنید.
-7. بدون migration، `TOKEN_ENCRYPTION_KEY` را تغییر ندهید؛ ابتدا فرآیند دوکلیدی سند امنیت را اجرا کنید.
+`ready` یعنی provisioning و validation موفق بوده، نه تضمین دسترسی از هر ISP. VLESS Reality و Hysteria2 باید از شبکه‌های هدف جداگانه آزمایش شوند. قطع کامل مسیر خارجی راه‌حل تضمین‌شده ندارد.

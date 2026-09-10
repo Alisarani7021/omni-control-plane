@@ -22,7 +22,6 @@
   "vars": {
     "PUBLIC_BASE_URL": "https://control.example.com",
     "BOT_USERNAME": "replace_me_bot",
-    "CF_OAUTH_CLIENT_ID": "replace-after-oauth-client-creation",
     "SING_BOX_VERSION": "1.14.0",
     "SESSION_TTL_SECONDS": "2592000",
     "LOGIN_LINK_TTL_SECONDS": "600",

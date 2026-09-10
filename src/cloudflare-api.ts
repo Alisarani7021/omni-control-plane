@@ -1,4 +1,4 @@
-import { decryptJson, encryptJson, nowIso } from "./security";
+import { decryptJson, nowIso } from "./security";
 import type { ConnectionRow, Env } from "./types";
 
 interface CloudflareEnvelope<T> {
@@ -7,83 +7,7 @@ interface CloudflareEnvelope<T> {
   errors?: Array<{ code?: number; message?: string }>;
 }
 
-interface OAuthTokenResponse {
-  access_token: string;
-  refresh_token?: string;
-  expires_in?: number;
-  scope?: string;
-  token_type?: string;
-}
-
-function basicAuthorization(clientId: string, clientSecret: string): string {
-  return `Basic ${btoa(`${clientId}:${clientSecret}`)}`;
-}
-
-export async function exchangeAuthorizationCode(
-  env: Env,
-  code: string,
-  verifier: string,
-  redirectUri: string,
-): Promise<OAuthTokenResponse> {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: redirectUri,
-    code_verifier: verifier,
-  });
-  const response = await fetch("https://dash.cloudflare.com/oauth2/token", {
-    method: "POST",
-    headers: {
-      Authorization: basicAuthorization(env.CF_OAUTH_CLIENT_ID, env.CF_OAUTH_CLIENT_SECRET),
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body,
-  });
-  const result = await response.json<OAuthTokenResponse & { error?: string }>();
-  if (!response.ok || !result.access_token) throw new Error(`Cloudflare OAuth exchange failed: ${result.error ?? response.status}`);
-  return result;
-}
-
-async function refreshConnection(env: Env, connection: ConnectionRow): Promise<{ token: string; connection: ConnectionRow }> {
-  if (!connection.refresh_token_enc) throw new Error("Cloudflare authorization expired; reconnect required");
-  const refreshToken = await decryptJson<string>(
-    connection.refresh_token_enc,
-    env.TOKEN_ENCRYPTION_KEY,
-    `oauth:${connection.id}:refresh`,
-  );
-  const response = await fetch("https://dash.cloudflare.com/oauth2/token", {
-    method: "POST",
-    headers: {
-      Authorization: basicAuthorization(env.CF_OAUTH_CLIENT_ID, env.CF_OAUTH_CLIENT_SECRET),
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }),
-  });
-  const result = await response.json<OAuthTokenResponse & { error?: string }>();
-  if (!response.ok || !result.access_token) throw new Error(`Cloudflare OAuth refresh failed: ${result.error ?? response.status}`);
-  const nextRefreshToken = result.refresh_token ?? refreshToken;
-  const accessTokenEnc = await encryptJson(result.access_token, env.TOKEN_ENCRYPTION_KEY, `oauth:${connection.id}:access`);
-  const refreshTokenEnc = await encryptJson(nextRefreshToken, env.TOKEN_ENCRYPTION_KEY, `oauth:${connection.id}:refresh`);
-  const expiresAt = result.expires_in ? new Date(Date.now() + result.expires_in * 1000).toISOString() : null;
-  const updatedAt = nowIso();
-  await env.DB.prepare(
-    `UPDATE oauth_connections SET access_token_enc = ?, refresh_token_enc = ?, expires_at = ?, scopes = COALESCE(?, scopes), updated_at = ?
-     WHERE id = ? AND revoked_at IS NULL`,
-  ).bind(accessTokenEnc, refreshTokenEnc, expiresAt, result.scope ?? null, updatedAt, connection.id).run();
-  return {
-    token: result.access_token,
-    connection: {
-      ...connection,
-      access_token_enc: accessTokenEnc,
-      refresh_token_enc: refreshTokenEnc,
-      expires_at: expiresAt,
-      scopes: result.scope ?? connection.scopes,
-      updated_at: updatedAt,
-    },
-  };
-}
+export type CloudflareAuth = { kind: "api_token"; token: string };
 
 export async function getConnection(env: Env, connectionId: string, tenantId?: string): Promise<ConnectionRow> {
   const query = tenantId
@@ -96,17 +20,75 @@ export async function getConnection(env: Env, connectionId: string, tenantId?: s
   return connection;
 }
 
-export async function getValidAccessToken(env: Env, connection: ConnectionRow): Promise<string> {
+export async function getValidCloudflareAuth(env: Env, connection: ConnectionRow): Promise<CloudflareAuth> {
   if (connection.revoked_at) throw new Error("Cloudflare connection is revoked");
-  if (connection.expires_at && Date.parse(connection.expires_at) <= Date.now() + 60_000) {
-    return (await refreshConnection(env, connection)).token;
+  if (connection.auth_type !== "api_token") {
+    throw new Error("OAuth-based Cloudflare connections are no longer supported; reconnect with a scoped API token");
   }
-  return decryptJson<string>(connection.access_token_enc, env.TOKEN_ENCRYPTION_KEY, `oauth:${connection.id}:access`);
+  if (connection.expires_at && Date.parse(connection.expires_at) <= Date.now()) {
+    throw new Error("Temporary Cloudflare API token expired; reconnect required");
+  }
+  const token = await decryptJson<string>(
+    connection.access_token_enc,
+    env.TOKEN_ENCRYPTION_KEY,
+    `cloudflare:${connection.id}:api-token`,
+  );
+  return { kind: "api_token", token };
 }
 
-export async function cloudflareApi<T>(token: string, path: string, init?: RequestInit): Promise<T> {
+async function scrubConnection(env: Env, connectionId: string): Promise<void> {
+  const revokedAt = nowIso();
+  await env.DB.prepare(
+    `UPDATE oauth_connections
+     SET access_token_enc = 'erased', refresh_token_enc = NULL, expires_at = NULL,
+         revoked_at = ?, updated_at = ?
+     WHERE id = ? AND revoked_at IS NULL`,
+  ).bind(revokedAt, revokedAt, connectionId).run();
+}
+
+export async function revokeConnectionGrant(env: Env, connection: ConnectionRow): Promise<void> {
+  if (connection.revoked_at) return;
+  await scrubConnection(env, connection.id);
+}
+
+export async function disconnectConnectionIfIdle(
+  env: Env,
+  connectionId: string,
+  excludingDeploymentId?: string,
+): Promise<boolean> {
+  const active = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM deployments
+     WHERE oauth_connection_id = ? AND id != ?
+       AND status IN ('queued', 'preparing', 'awaiting_agent', 'agent_ready', 'finalizing', 'revoking')`,
+  ).bind(connectionId, excludingDeploymentId ?? "").first<{ count: number }>();
+  if ((active?.count ?? 0) > 0) return false;
+  const connection = await env.DB.prepare(
+    "SELECT * FROM oauth_connections WHERE id = ? AND revoked_at IS NULL",
+  ).bind(connectionId).first<ConnectionRow>();
+  if (!connection) return false;
+  await revokeConnectionGrant(env, connection);
+  return true;
+}
+
+export async function eraseExpiredApiTokens(env: Env): Promise<number> {
+  const erasedAt = nowIso();
+  const result = await env.DB.prepare(
+    `UPDATE oauth_connections
+     SET access_token_enc = 'expired', refresh_token_enc = NULL, expires_at = NULL,
+         revoked_at = ?, updated_at = ?
+     WHERE auth_type = 'api_token' AND revoked_at IS NULL
+       AND expires_at IS NOT NULL AND expires_at <= ?`,
+  ).bind(erasedAt, erasedAt, erasedAt).run();
+  return result.meta.changes ?? 0;
+}
+
+function applyCloudflareAuth(headers: Headers, auth: CloudflareAuth): void {
+  headers.set("Authorization", `Bearer ${auth.token}`);
+}
+
+export async function cloudflareApi<T>(auth: CloudflareAuth, path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  headers.set("Authorization", `Bearer ${token}`);
+  applyCloudflareAuth(headers, auth);
   headers.set("Accept", "application/json");
   if (init?.body && !headers.has("Content-Type") && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
   const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, { ...init, headers });
@@ -124,7 +106,7 @@ export async function cloudflareApi<T>(token: string, path: string, init?: Reque
 }
 
 export async function uploadWorkerScript(
-  token: string,
+  auth: CloudflareAuth,
   accountId: string,
   scriptName: string,
   source: string,
@@ -140,41 +122,41 @@ export async function uploadWorkerScript(
   const body = new FormData();
   body.set("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
   body.set("worker.mjs", new Blob([source], { type: "application/javascript+module" }), "worker.mjs");
-  await cloudflareApi<unknown>(token, `/accounts/${accountId}/workers/scripts/${encodeURIComponent(scriptName)}`, {
+  await cloudflareApi<unknown>(auth, `/accounts/${accountId}/workers/scripts/${encodeURIComponent(scriptName)}`, {
     method: "PUT",
     body,
   });
 }
 
 export async function attachWorkerDomain(
-  token: string,
+  auth: CloudflareAuth,
   accountId: string,
   zoneId: string,
   hostname: string,
   scriptName: string,
 ): Promise<void> {
-  await cloudflareApi<unknown>(token, `/accounts/${accountId}/workers/domains`, {
+  await cloudflareApi<unknown>(auth, `/accounts/${accountId}/workers/domains`, {
     method: "PUT",
     body: JSON.stringify({ hostname, service: scriptName, zone_id: zoneId }),
   });
 }
 
-export async function upsertARecord(token: string, zoneId: string, hostname: string, ipv4: string): Promise<string> {
+export async function upsertARecord(auth: CloudflareAuth, zoneId: string, hostname: string, ipv4: string): Promise<string> {
   const records = await cloudflareApi<Array<{ id: string; type: string; name: string }>>(
-    token,
+    auth,
     `/zones/${zoneId}/dns_records?type=A&name=${encodeURIComponent(hostname)}&per_page=10`,
   );
   const payload = JSON.stringify({ type: "A", name: hostname, content: ipv4, ttl: 300, proxied: false });
   const existing = records[0];
   if (existing) {
-    const updated = await cloudflareApi<{ id: string }>(token, `/zones/${zoneId}/dns_records/${existing.id}`, { method: "PUT", body: payload });
+    const updated = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records/${existing.id}`, { method: "PUT", body: payload });
     return updated.id;
   }
-  const created = await cloudflareApi<{ id: string }>(token, `/zones/${zoneId}/dns_records`, { method: "POST", body: payload });
+  const created = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records`, { method: "POST", body: payload });
   return created.id;
 }
 
-export async function verifyZoneOwnership(token: string, zoneId: string, accountId: string): Promise<void> {
-  const zone = await cloudflareApi<{ id: string; account: { id: string }; status: string }>(token, `/zones/${zoneId}`);
+export async function verifyZoneOwnership(auth: CloudflareAuth, zoneId: string, accountId: string): Promise<void> {
+  const zone = await cloudflareApi<{ id: string; account: { id: string }; status: string }>(auth, `/zones/${zoneId}`);
   if (zone.account.id !== accountId || zone.status !== "active") throw new Error("Selected zone is not active in the selected account");
 }

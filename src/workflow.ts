@@ -3,8 +3,9 @@ import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import { audit } from "./db";
 import {
   attachWorkerDomain,
+  disconnectConnectionIfIdle,
   getConnection,
-  getValidAccessToken,
+  getValidCloudflareAuth,
   uploadWorkerScript,
   upsertARecord,
   verifyZoneOwnership,
@@ -67,7 +68,12 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       });
       if (deployment) {
         try {
-          await notify(this.env, deployment, "عملیات خودکار V13 ناموفق بود. جزئیات امن در پنل ثبت شده است؛ از گزینهٔ تلاش مجدد استفاده کنید.");
+          await disconnectConnectionIfIdle(this.env, deployment.oauth_connection_id, deployment.id);
+        } catch {
+          // Credential cleanup is retried by the expiry cron for temporary scoped API tokens.
+        }
+        try {
+          await notify(this.env, deployment, "عملیات خودکار V13 ناموفق بود و دسترسی موقت در صورت نبود کار فعال دیگر پاک شد. برای تلاش مجدد، اتصال تازه بسازید.");
         } catch {
           // Notification failure must not hide the provisioning failure.
         }
@@ -80,19 +86,19 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     await step.do("mark preparing", async () => updateStatus(this.env, deployment.id, "preparing"));
     await step.do("verify zone and configure node DNS", STEP_CONFIG, async () => {
       const connection = await getConnection(this.env, deployment.oauth_connection_id);
-      const token = await getValidAccessToken(this.env, connection);
-      await verifyZoneOwnership(token, deployment.zone_id, deployment.account_id);
-      const dnsRecordId = await upsertARecord(token, deployment.zone_id, deployment.node_hostname, deployment.vps_ipv4);
+      const auth = await getValidCloudflareAuth(this.env, connection);
+      await verifyZoneOwnership(auth, deployment.zone_id, deployment.account_id);
+      const dnsRecordId = await upsertARecord(auth, deployment.zone_id, deployment.node_hostname, deployment.vps_ipv4);
       return { dnsRecordId };
     });
     await step.do("deploy private pending data plane", STEP_CONFIG, async () => {
       const connection = await getConnection(this.env, deployment.oauth_connection_id);
-      const token = await getValidAccessToken(this.env, connection);
-      await uploadWorkerScript(token, deployment.account_id, deployment.worker_name, DATA_PLANE_SOURCE, {
+      const auth = await getValidCloudflareAuth(this.env, connection);
+      await uploadWorkerScript(auth, deployment.account_id, deployment.worker_name, DATA_PLANE_SOURCE, {
         SUB_TOKEN_HASH: deployment.subscription_token_hash,
         CONFIG_BUNDLE: JSON.stringify(buildPendingBundle(deployment)),
       });
-      await attachWorkerDomain(token, deployment.account_id, deployment.zone_id, deployment.worker_hostname, deployment.worker_name);
+      await attachWorkerDomain(auth, deployment.account_id, deployment.zone_id, deployment.worker_hostname, deployment.worker_name);
       return { sourceSha256: await sha256(DATA_PLANE_SOURCE) };
     });
     await step.do("mark awaiting node", async () => {
@@ -120,8 +126,8 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       if (!secretRow) throw new Error("Deployment secrets not found");
       const secrets = await decryptJson<SecretBundle>(secretRow.bundle_enc, this.env.TOKEN_ENCRYPTION_KEY, `deployment:${current.id}`);
       const connection = await getConnection(this.env, current.oauth_connection_id);
-      const token = await getValidAccessToken(this.env, connection);
-      await uploadWorkerScript(token, current.account_id, current.worker_name, DATA_PLANE_SOURCE, {
+      const auth = await getValidCloudflareAuth(this.env, connection);
+      await uploadWorkerScript(auth, current.account_id, current.worker_name, DATA_PLANE_SOURCE, {
         SUB_TOKEN_HASH: current.subscription_token_hash,
         CONFIG_BUNDLE: JSON.stringify(buildReadyBundle(current, secrets)),
       });
@@ -139,6 +145,23 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       });
       await notify(this.env, deployment, "V13 آماده است. لینک‌های خصوصی VLESS Reality و Hysteria2 فقط داخل پنل امن نمایش داده می‌شوند.");
     });
+    try {
+      const disconnected = await step.do("erase temporary Cloudflare access", STEP_CONFIG, async () => {
+        return disconnectConnectionIfIdle(this.env, deployment.oauth_connection_id, deployment.id);
+      });
+      if (disconnected) await notify(this.env, deployment, "نسخهٔ موقت و رمز‌شدهٔ Cloudflare API Token از V13 پاک شد؛ Token اصلی در Cloudflare حذف نشده است.");
+    } catch (error) {
+      await audit(this.env, {
+        tenantId: deployment.tenant_id,
+        actorType: "workflow",
+        action: "cloudflare.connection.auto_disconnect",
+        resourceType: "cloudflare_connection",
+        resourceId: deployment.oauth_connection_id,
+        outcome: "failure",
+        metadata: { errorType: error instanceof Error ? error.name : "unknown" },
+      });
+      await notify(this.env, deployment, "سرویس آماده است، اما قطع خودکار Cloudflare ناموفق بود. از دکمهٔ «قطع دسترسی» در پنل استفاده کنید.");
+    }
     return { status: "ready" };
   }
 
@@ -146,8 +169,8 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
     const replacementHash = await step.do("invalidate subscription credential", async () => sha256(randomToken(32)));
     await step.do("disable data plane", STEP_CONFIG, async () => {
       const connection = await getConnection(this.env, deployment.oauth_connection_id);
-      const token = await getValidAccessToken(this.env, connection);
-      await uploadWorkerScript(token, deployment.account_id, deployment.worker_name, DATA_PLANE_SOURCE, {
+      const auth = await getValidCloudflareAuth(this.env, connection);
+      await uploadWorkerScript(auth, deployment.account_id, deployment.worker_name, DATA_PLANE_SOURCE, {
         SUB_TOKEN_HASH: replacementHash,
         CONFIG_BUNDLE: JSON.stringify(buildPendingBundle(deployment)),
       });
@@ -167,6 +190,21 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       });
       await notify(this.env, deployment, "دسترسی اشتراک V13 باطل شد. برای حذف سرویس از VPS، دستورهای پاک‌سازی داخل راهنمای عملیات را اجرا کنید.");
     });
+    try {
+      await step.do("erase temporary Cloudflare access", STEP_CONFIG, async () => {
+        return disconnectConnectionIfIdle(this.env, deployment.oauth_connection_id, deployment.id);
+      });
+    } catch (error) {
+      await audit(this.env, {
+        tenantId: deployment.tenant_id,
+        actorType: "workflow",
+        action: "cloudflare.connection.auto_disconnect",
+        resourceType: "cloudflare_connection",
+        resourceId: deployment.oauth_connection_id,
+        outcome: "failure",
+        metadata: { errorType: error instanceof Error ? error.name : "unknown" },
+      });
+    }
     return { status: "revoked" };
   }
 }

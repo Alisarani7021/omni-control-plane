@@ -1,6 +1,7 @@
 import { completeBootstrap, receiveAgentReport, serveBootstrap } from "./agent";
 import { authenticated, loginFromOneTimeLink, loginRateLimit, logout } from "./auth";
-import { appPage, landingPage, legalPage } from "./dashboard";
+import { eraseExpiredApiTokens } from "./cloudflare-api";
+import { appPage, landingPage, legalPage, logoSvg } from "./dashboard";
 import {
   createDeployment,
   getDeployment,
@@ -9,13 +10,13 @@ import {
   revokeDeployment,
   rotateBootstrapToken,
 } from "./deployments";
+import { createTemporaryApiTokenConnection } from "./api-token";
 import { HttpError, json, methodNotAllowed, requireSameOrigin } from "./http";
 import {
-  finishCloudflareOAuth,
+  disconnectCloudflareConnection,
   listCloudflareAccounts,
   listCloudflareConnections,
   listCloudflareZones,
-  startCloudflareOAuth,
 } from "./oauth";
 import { handleTelegramWebhook } from "./telegram";
 import type { Env } from "./types";
@@ -32,6 +33,10 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === "/healthz") {
     const wrongMethod = only(request, ["GET"]);
     return wrongMethod ?? json({ ok: true, service: "v13-control-plane", version: 13 });
+  }
+  if (path === "/logo.svg") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? logoSvg();
   }
   if (path === "/telegram/webhook") {
     const wrongMethod = only(request, ["POST"]);
@@ -66,12 +71,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     const wrongMethod = only(request, ["GET"]);
     return wrongMethod ?? legalPage(path === "/privacy" ? "privacy" : "terms");
   }
-
-  if (path === "/oauth/cloudflare/callback") {
-    const wrongMethod = only(request, ["GET"]);
-    if (wrongMethod) return wrongMethod;
-    const principal = await authenticated(request, env);
-    return finishCloudflareOAuth(request, env, principal);
+  if (path === "/oauth/cloudflare/start" || path === "/oauth/cloudflare/callback") {
+    return json({ error: { code: "not_found", message: "Not found" } }, 404);
   }
 
   const principal = await authenticated(request, env);
@@ -85,16 +86,22 @@ async function route(request: Request, env: Env): Promise<Response> {
     requireSameOrigin(request, env);
     return logout(request, env, principal);
   }
-  if (path === "/oauth/cloudflare/start") {
-    const wrongMethod = only(request, ["GET"]);
-    if (wrongMethod) return wrongMethod;
-    const fetchSite = request.headers.get("Sec-Fetch-Site");
-    if (fetchSite && fetchSite !== "same-origin") throw new HttpError(403, "csrf_rejected", "Cross-site OAuth start rejected");
-    return startCloudflareOAuth(env, principal);
-  }
   if (path === "/api/v1/cloudflare/connections") {
     const wrongMethod = only(request, ["GET"]);
     return wrongMethod ?? listCloudflareConnections(env, principal);
+  }
+  if (path === "/api/v1/cloudflare/api-token") {
+    const wrongMethod = only(request, ["POST"]);
+    if (wrongMethod) return wrongMethod;
+    requireSameOrigin(request, env);
+    return createTemporaryApiTokenConnection(request, env, principal);
+  }
+  const disconnectMatch = /^\/api\/v1\/cloudflare\/connections\/([0-9a-f-]{36})\/disconnect$/u.exec(path);
+  if (disconnectMatch?.[1]) {
+    const wrongMethod = only(request, ["POST"]);
+    if (wrongMethod) return wrongMethod;
+    requireSameOrigin(request, env);
+    return disconnectCloudflareConnection(request, env, principal, disconnectMatch[1]);
   }
   if (path === "/api/v1/cloudflare/accounts") {
     const wrongMethod = only(request, ["GET"]);
@@ -155,5 +162,9 @@ export default {
       });
       return json({ error: { code: "internal_error", message: "Internal server error" } }, 500);
     }
+  },
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const erased = await eraseExpiredApiTokens(env);
+    if (erased > 0) console.log("expired_api_tokens_erased", { count: erased });
   },
 };
