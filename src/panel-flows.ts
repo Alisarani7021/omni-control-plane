@@ -1,4 +1,5 @@
 import { createDonation } from "./ai-donate";
+import { buildPhantomPack, packLinkText, sanitizePackDomain } from "./phantom-pack";
 import { recordCleanIpReport, type CleanIpReport } from "./clean-ip";
 import { recordMapReport, type MapReport } from "./censorship-map";
 import { HttpError } from "./http";
@@ -13,7 +14,7 @@ import type { Env, TelegramInlineKeyboard } from "./types";
 
 export const PANEL_FLOW_TTL_SECONDS = 900;
 
-export type PanelFlowKind = "rum" | "map" | "donate";
+export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel";
 
 export const FLOW_STEP_RUM_PING = "rum:ping";
 export const FLOW_STEP_RUM_LOSS = "rum:loss";
@@ -23,6 +24,10 @@ export const FLOW_STEP_MAP_VERDICT = "map:verdict";
 export const FLOW_STEP_MAP_CITY = "map:city";
 export const FLOW_STEP_MAP_RTT = "map:rtt";
 export const FLOW_STEP_DONATE_KEY = "donate:key";
+export const FLOW_STEP_PACK_DOMAIN = "pack:domain";
+export const FLOW_STEP_PACK_UUID = "pack:uuid";
+export const FLOW_STEP_PANEL_NAME = "panel:name";
+export const FLOW_STEP_PANEL_PASS = "panel:pass";
 
 /** Steps where the answer must come from an inline button, not from text. */
 export const BUTTON_ONLY_STEPS: readonly string[] = [
@@ -43,7 +48,7 @@ export function panelFlowKeyboard(): TelegramInlineKeyboard {
 }
 
 function isFlowKind(value: string): value is PanelFlowKind {
-  return value === "rum" || value === "map" || value === "donate";
+  return value === "rum" || value === "map" || value === "donate" || value === "pack" || value === "panel";
 }
 
 export async function loadPanelFlow(env: Env, telegramUserId: string): Promise<PanelFlow | null> {
@@ -103,6 +108,33 @@ export function flowPrompt(flow: PanelFlow): string {
         "🗺 آخرین قدم",
         "",
         "میانهٔ پینگ به میلی‌ثانیه بفرستید یا «-» اگر اندازه نگرفتید.",
+      ].join("\n");
+    case FLOW_STEP_PACK_DOMAIN:
+      return [
+        "👻 قدم ۱ از ۲ — دامنه",
+        "",
+        "دامنهٔ سرور را فقط به شکل <code>example.com</code> بفرستید (بدون http و بدون پورت).",
+        "برای انصراف دکمهٔ پایین را بزنید.",
+      ].join("\n");
+    case FLOW_STEP_PACK_UUID:
+      return [
+        "👻 قدم ۲ از ۲ — UUID",
+        "",
+        "UUID خودتان را بفرستید، یا <code>new</code> تا یک UUID تازه بسازم.",
+        "هیچ‌چیز در سرور ذخیره نمی‌شود؛ بسته هر بار از همین دو مقدار ساخته می‌شود.",
+      ].join("\n");
+    case FLOW_STEP_PANEL_NAME:
+      return [
+        "🚀 قدم ۱ از ۲ — نام Worker",
+        "",
+        "نام ورکر را بفرستید: حرف کوچک انگلیسی، عدد و خط‌تیره، حداقل ۳ نویسه.",
+        "مثال: <code>my-bpb</code>",
+      ].join("\n");
+    case FLOW_STEP_PANEL_PASS:
+      return [
+        "🚀 قدم ۲ از ۲ — رمز پنل",
+        "",
+        "رمز ورود پنل را بفرستید (حداقل ۴ نویسه). این رمز در دیتابیس ذخیره نمی‌شود.",
       ].join("\n");
     case FLOW_STEP_DONATE_KEY:
       return [
@@ -187,6 +219,27 @@ export async function processPanelFlowText(
           followUp: "clean-ip",
           saved: true,
         };
+      }
+      case FLOW_STEP_PACK_DOMAIN: {
+        const domain = sanitizePackDomain(text);
+        if (!domain) {
+          return { kind: "prompt", text: `دامنهٔ معتبر نیست. فقط شکلی مثل <code>example.com</code> پذیرفته می‌شود.\n\n${flowPrompt(flow)}` };
+        }
+        flow.step = FLOW_STEP_PACK_UUID;
+        flow.data = { ...flow.data, domain };
+        await savePanelFlow(env, telegramUserId, flow);
+        return { kind: "prompt", text: flowPrompt(flow) };
+      }
+      case FLOW_STEP_PACK_UUID: {
+        const domain = sanitizePackDomain(flow.data["domain"] ?? "");
+        if (!domain) {
+          await clearPanelFlow(env, telegramUserId);
+          return { kind: "done", text: "فرایند نیمه‌کاره منقضی شد؛ از اول شروع کنید." };
+        }
+        const pack = buildPhantomPack(domain, text);
+        await clearPanelFlow(env, telegramUserId);
+        const base = `${(env.PUBLIC_BASE_URL ?? "").replace(/\/+$/u, "")}/api/v1/pack`;
+        return { kind: "done", text: packLinkText(pack, base) };
       }
       case FLOW_STEP_MAP_RTT: {
         const rtt = parseNumberOrDash(text, 10_000);

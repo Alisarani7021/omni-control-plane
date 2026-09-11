@@ -1,6 +1,7 @@
 import { rateLimit } from "./db";
 import { cleanIpFormatText, parseCleanIpReport, rankCleanIps, recordCleanIpReport } from "./clean-ip";
 import { aggregateMap, parseMapReport, recordMapReport } from "./censorship-map";
+import { buildPhantomPack, packToClashYaml, packToSingBox, packToSubscription } from "./phantom-pack";
 import { HttpError, json, readJson, secureHeaders } from "./http";
 import { sha256 } from "./security";
 import { renderFetchScript, validateDropDomain } from "./whitehole";
@@ -62,6 +63,53 @@ export async function cleanIpFeed(request: Request, env: Env): Promise<Response>
     generatedAt: ranking.generatedAt,
     ranked: ranking.rows,
   }, 200, { "Cache-Control": "public, max-age=60", "Access-Control-Allow-Origin": "*" });
+}
+
+/**
+ * Stateless PHANTOM pack generator: the caller supplies domain + uuid, we return
+ * configs. Nothing is stored, nothing is verified against a live server, and the
+ * same input always yields the same pack.
+ */
+export async function phantomPackFeed(request: Request, env: Env): Promise<Response> {
+  await telemetryBucket(request, env, "pack", 60, 3_600);
+  const url = new URL(request.url);
+  const domain = url.searchParams.get("domain") ?? "";
+  const uuid = url.searchParams.get("uuid") ?? undefined;
+  const format = (url.searchParams.get("format") ?? "v2ray").toLowerCase();
+  if (uuid !== undefined && uuid.length > 64) throw new HttpError(400, "invalid_input", "uuid is too long");
+  let pack;
+  try {
+    pack = buildPhantomPack(domain, uuid);
+  } catch {
+    throw new HttpError(400, "invalid_domain", "domain must be a plain hostname such as example.com");
+  }
+  if (format === "clash") {
+    return new Response(packToClashYaml(pack), {
+      headers: secureHeaders({ "Content-Type": "text/yaml; charset=utf-8", "Cache-Control": "no-store" }),
+    });
+  }
+  if (format === "singbox" || format === "sing-box") {
+    return new Response(packToSingBox(pack), {
+      headers: secureHeaders({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }),
+    });
+  }
+  if (format === "json") {
+    return json({
+      domain: pack.domain,
+      uuid: pack.uuid,
+      counts: pack.counts,
+      entries: pack.entries.map((entry) => ({ label: entry.label, kind: entry.kind, port: entry.port })),
+      note: "Configs are generated on request and never stored; reachability is not measured.",
+    });
+  }
+  return new Response(packToSubscription(pack), {
+    headers: secureHeaders({
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+      "profile-title": "PHANTOM 20",
+      "profile-update-interval": "1440",
+    }),
+  });
 }
 
 export async function submitMapReport(request: Request, env: Env): Promise<Response> {

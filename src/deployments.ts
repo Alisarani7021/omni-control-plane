@@ -367,6 +367,38 @@ export async function retryDeployment(
   return json({ ok: true, action, workflowInstanceId }, 202);
 }
 
+/** Retired or broken rows only — an active deployment still owns Cloudflare resources and tokens. */
+export const DELETABLE_DEPLOYMENT_STATUSES: readonly string[] = ["failed", "revoked"];
+
+/**
+ * Hard-removes a deployment record and everything hanging off it. Deliberately
+ * does not touch Cloudflare: revoking is what tears down the Worker, and deleting
+ * the row of a live node would only lose access to it.
+ */
+export async function deleteDeployment(env: Env, principal: SessionPrincipal, deploymentId: string): Promise<Response> {
+  const deployment = await ownedDeployment(env, principal, deploymentId);
+  if (!DELETABLE_DEPLOYMENT_STATUSES.includes(deployment.status)) {
+    throw new HttpError(409, "deployment_not_deletable", "Only failed or revoked deployments can be deleted");
+  }
+  // The schema cascades, but D1 only enforces foreign keys per connection, so clear children explicitly.
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM agent_reports WHERE deployment_id = ?").bind(deployment.id),
+    env.DB.prepare("DELETE FROM bootstrap_tokens WHERE deployment_id = ?").bind(deployment.id),
+    env.DB.prepare("DELETE FROM deployment_secrets WHERE deployment_id = ?").bind(deployment.id),
+    env.DB.prepare("DELETE FROM deployments WHERE id = ? AND tenant_id = ?").bind(deployment.id, principal.tenantId),
+  ]);
+  await audit(env, {
+    tenantId: principal.tenantId,
+    actorType: "user",
+    actorId: principal.telegramUserId,
+    action: "deployment.delete",
+    resourceType: "deployment",
+    resourceId: deployment.id,
+    outcome: "success",
+  });
+  return json({ ok: true, deleted: deployment.id });
+}
+
 export async function revokeDeployment(
   request: Request,
   env: Env,

@@ -8,6 +8,7 @@ import {
   submitCleanIpReport,
   submitMapReport,
   whiteHoleReader,
+  phantomPackFeed,
 } from "./telemetry-routes";
 import { purgeExpiredWhiteHoleDrops } from "./whitehole";
 import { authenticated, loginFromOneTimeLink, loginRateLimit, logout } from "./auth";
@@ -81,6 +82,10 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === "/api/v1/map") {
     const wrongMethod = only(request, ["GET"]);
     return wrongMethod ?? mapFeed(request, env);
+  }
+  if (path === "/api/v1/pack") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? phantomPackFeed(request, env);
   }
   if (path === "/api/v1/whitehole/fetch.sh") {
     const wrongMethod = only(request, ["GET"]);
