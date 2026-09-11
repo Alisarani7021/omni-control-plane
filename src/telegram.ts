@@ -438,6 +438,7 @@ interface RenderedView {
   text: string;
   keyboard: TelegramInlineKeyboard;
   html: boolean;
+  protect?: boolean;
 }
 
 function shortId(id: string): string {
@@ -545,6 +546,7 @@ async function renderConnectPrompt(env: Env, tenantId: string, telegramUserId: s
     text: [`${intro}`, "", omniLoginText(ttlMinutes), "", "توکن Cloudflare را فقط در فرم امن پنل وارد کنید، هرگز در چت."].join("\n"),
     keyboard: loginKeyboard(appUrl, webUrl),
     html: false,
+    protect: true,
   };
 }
 
@@ -1405,7 +1407,7 @@ async function editView(
       chat_id: chatId,
       text: view.text,
       ...(view.html ? { parse_mode: "HTML" } : {}),
-      protect_content: true,
+      ...(view.protect === true ? { protect_content: true } : {}),
       disable_web_page_preview: true,
       reply_markup: view.keyboard,
     });
@@ -1421,7 +1423,7 @@ async function sendView(
     chat_id: chatId,
     text: view.text,
     ...(view.html ? { parse_mode: "HTML" } : {}),
-    protect_content: true,
+    ...(view.protect === true ? { protect_content: true } : {}),
     disable_web_page_preview: true,
     reply_markup: view.keyboard,
   });
@@ -1489,7 +1491,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
     if (data === "v13:login") {
       const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenant.id, telegramUserId);
       await answerCallback(env, query.id, "لینک ورود ساخته شد ✅");
-      await sendView(env, chatId, { text: omniLoginText(ttlMinutes), keyboard: loginKeyboard(appUrl, webUrl), html: false });
+      await sendView(env, chatId, { text: omniLoginText(ttlMinutes), keyboard: loginKeyboard(appUrl, webUrl), html: false, protect: true });
       return json({ ok: true });
     }
     if (data === "v13:status") {
@@ -1628,7 +1630,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
           keyboard: omniBackMenuKeyboard(),
           html: false,
         });
-        await sendView(env, chatId, { text: bootstrap.text, keyboard: bootstrap.keyboard, html: true });
+        await sendView(env, chatId, { text: bootstrap.text, keyboard: bootstrap.keyboard, html: true, protect: true });
       } catch (error) {
         const message = faErrorMessage(error);
         await clearWizard(env, telegramUserId);
@@ -1712,7 +1714,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         const rotated = await botRotateBootstrap(env, principal, depBoot);
         const bootstrap = renderBootstrapMessage(rotated.bootstrap, detail.deployment.workerName);
         await answerCallback(env, query.id, "بوت‌استرپ جدید صادر شد ✅");
-        await sendView(env, chatId, { text: bootstrap.text, keyboard: bootstrap.keyboard, html: true });
+        await sendView(env, chatId, { text: bootstrap.text, keyboard: bootstrap.keyboard, html: true, protect: true });
       } catch (error) {
         await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
       }
@@ -1728,7 +1730,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         }
         const view = renderSubscriptionsMessage(detail.subscriptions, detail.deployment.workerName, false);
         await answerCallback(env, query.id, "اشتراک‌ها");
-        await sendView(env, chatId, { text: view.text, keyboard: view.keyboard, html: true });
+        await sendView(env, chatId, { text: view.text, keyboard: view.keyboard, html: true, protect: true });
       } catch (error) {
         await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
       }
@@ -1757,7 +1759,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         const rotated = await botRotateSubscription(env, principal, depSubrotYes);
         const view = renderSubscriptionsMessage(rotated.subscriptions, detail.deployment.workerName, true);
         await answerCallback(env, query.id, "اشتراک چرخید ✅");
-        await sendView(env, chatId, { text: view.text, keyboard: view.keyboard, html: true });
+        await sendView(env, chatId, { text: view.text, keyboard: view.keyboard, html: true, protect: true });
       } catch (error) {
         await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
       }
@@ -1864,7 +1866,6 @@ export async function sendTelegramMessage(env: Env, telegramUserId: string, text
   await telegramApi(env, "sendMessage", {
     chat_id: telegramUserId,
     text,
-    protect_content: true,
     disable_web_page_preview: true,
   });
 }
