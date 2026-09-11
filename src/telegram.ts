@@ -394,13 +394,13 @@ async function telegramApi(env: Env, method: string, payload: Record<string, unk
   if (!response.ok || !result.ok) throw new Error(`Telegram API request failed: ${response.status} ${method}`);
 }
 
-function webhookSend(chatId: number, text: string, replyMarkup?: TelegramInlineKeyboard, html = false): Response {
+function webhookSend(chatId: number, text: string, replyMarkup?: TelegramInlineKeyboard, html = false, protect = false): Response {
   return json({
     method: "sendMessage",
     chat_id: chatId,
     text,
     ...(html ? { parse_mode: "HTML" } : {}),
-    protect_content: true,
+    ...(protect ? { protect_content: true } : {}),
     disable_web_page_preview: true,
     ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   });
@@ -1204,7 +1204,7 @@ async function sendLoginLinkMessage(
   telegramUserId: string,
 ): Promise<Response> {
   const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenantId, telegramUserId);
-  return webhookSend(chatId, omniLoginText(ttlMinutes), loginKeyboard(appUrl, webUrl));
+  return webhookSend(chatId, omniLoginText(ttlMinutes), loginKeyboard(appUrl, webUrl), false, true);
 }
 
 async function sendStatusMessage(env: Env, chatId: number, tenantId: string): Promise<Response> {
