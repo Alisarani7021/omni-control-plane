@@ -18,6 +18,17 @@
 - روی Debian/Ubuntu، sing-box نسخهٔ pin‌شدهٔ `1.14.0` فقط بعد از بررسی SHA-256 نصب می‌شود.
 - فقط دو profile واقعی تولید می‌شوند: VLESS Reality روی TCP/443 و Hysteria2 روی UDP/443.
 
+## هوش شبکهٔ ملی (V13.5)
+
+- طبقه‌بندی وضعیت شبکه با دو چشم مستقل (پروب لبه + گزارش ایجنت): باز / کندشده / فقط-ملی / خاموشی؛ بدون داده هرگز حدس نمی‌زند.
+- خودآزمایی مسمومیت DNS روی رزولورهای مستند (سیستم، 1.1.1.1، شکن، 403.online، رادار) با کارت «N از M پاسخ جعلی بود» و خوراک نقشهٔ سانسور.
+- DoH روی دامنهٔ Worker خود کاربر (`/dns-query?k=…`): رزولور split قطعی (.ir و ملی → داخلی، بقیه → Cloudflare)، فقط A/AAAA/TXT، سقف ساعتی، یک پاسخ cache.
+- snapshot روزانهٔ رنج‌های ملی RIPE/IRNIC با diff و کارت «+N رنج · -M رنج · امروز» و rule-set عمومی `geoip-ir.json`.
+- تونل DNS روی VPS کاربر: تفویض NS `t.<zone>` با همان Token موجود، نصب dnstt-server و slipstream-server (commit pin‌شده) با کلیدسازی فقط روی VPS، اندازه‌گیری خودکار MTU با پنج پروب، کارت `slipnet://` + راهنمای اپ + اثبات زنده‌بودن با TXT rtt، و ایمنی ضد-amplifier.
+- پروفیل‌های «مستقیم داخل کشور»: قواعد route ثابت (.ir + geoip-ir + CDN داخلی + پین DoH → direct)، مسابقهٔ تونل-در-برابر-مستقیم per دامنه، و واریانت‌های نام‌دار sniff/fakedns + خروجی Clash.
+- نود «خواب‌نت»: گزارش دوره‌ای خاموش، بیداری فقط در پنجرهٔ روزانه با jitter ±۹ دقیقه، خواندن یک beacon خواندنی TXT، دکمهٔ ⛔ بیدار/خواب فوری و سه قید اخلاقی روی همان کارت.
+- گارد تاریخ update تلگرام (رد replay قدیمی‌تر از ۱۰ دقیقه). جزئیات کامل در [هوش شبکهٔ ملی](docs/NET-INTEL-FA.md).
+
 ## اصل حداقل دسترسی
 
 DNS فقط به zone انتخاب‌شده محدود است. مجوز Workers Scripts در Cloudflare account-scoped است، اما به همان account انتخاب‌شده محدود می‌شود. Token به Billing، API Tokens، Memberships، account settings یا zoneهای دیگر دسترسی ندارد.
@@ -38,6 +49,7 @@ Token هرگز نباید در Telegram، چت، issue، screenshot، source cod
 - [معماری](docs/ARCHITECTURE-FA.md)
 - [امنیت](docs/SECURITY-FA.md)
 - [عملیات و بازیابی](docs/OPERATIONS-FA.md)
+- [هوش شبکهٔ ملی V13.5](docs/NET-INTEL-FA.md)
 
 ## بررسی قبل از انتشار
 

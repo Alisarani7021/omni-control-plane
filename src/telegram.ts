@@ -30,6 +30,19 @@ import {
   type CleanIpRow,
 } from "./clean-ip";
 import { aggregateMap, mapText, MAP_ISPS, MAP_TRANSPORT_LABELS, MAP_TRANSPORTS } from "./censorship-map";
+import { listRaceWinners, raceLine } from "./domestic-race";
+import { poisonLine, poisonSummary, mtuSuggestion } from "./dns-poison";
+import { dnsTunnelCard, enableDnsTunnel } from "./dns-tunnel";
+import { latestRirSnapshot, rirCardLine } from "./geoip-ir";
+import {
+  beaconRecordName,
+  pendingSleeperCommand,
+  publishSleeperBeacon,
+  queueSleeperCommand,
+  setDeploymentRole,
+  sleeperCard,
+  type SleeperCommand,
+} from "./sleeper";
 import { clearWhiteHoleDrop, latestWhiteHoleDrop, publishWhiteHoleDrop, whiteHoleReadCommands, whiteHoleText } from "./whitehole";
 import {
   DONATION_STATUS_LABELS,
@@ -76,6 +89,7 @@ import {
   sha256,
 } from "./security";
 import type {
+  DeploymentRow,
   Env,
   TelegramCallbackQuery,
   TelegramFrom,
@@ -89,6 +103,7 @@ interface TelegramApiResponse {
 }
 
 const TELEGRAM_RATE_LIMIT = 12;
+const TELEGRAM_MAX_UPDATE_AGE_SECONDS = 600;
 const TELEGRAM_RATE_WINDOW_SECONDS = 60;
 
 /** Commands owned by the V13 / Omni-private section of the bot. */
@@ -503,6 +518,12 @@ async function renderDepDetail(
   if (!["revoked", "revoking"].includes(status)) {
     rows.push([{ text: "🛑 ابطال استقرار", callback_data: `v13:dep-revoke:${deployment.id}` }]);
   }
+  if (status === "ready") {
+    rows.push([
+      { text: "🛰️ تونل DNS", callback_data: `v13:tun:${deployment.id}` },
+      { text: "😴 خواب‌نت", callback_data: `v13:slp:${deployment.id}` },
+    ]);
+  }
   rows.push([
     { text: "🔄 تازه‌سازی", callback_data: `v13:dep:${deployment.id}` },
     { text: "📦 لیست", callback_data: "v13:deps" },
@@ -712,13 +733,100 @@ function mapKeyboard(): TelegramInlineKeyboard {
         { text: "🔄 تازه‌سازی", callback_data: "v13:map" },
         { text: "📤 ثبت گزارش", callback_data: "v13:map:report" },
       ],
+      [{ text: "🧪 تست مسمومیت DNS", callback_data: "v13:dnstest" }],
       ...homeRow(),
     ],
   };
 }
 
 async function renderMapView(env: Env): Promise<RenderedView> {
-  return { text: mapText(await aggregateMap(env)), keyboard: mapKeyboard(), html: true };
+  const [aggregate, poison, snapshot, winners] = await Promise.all([
+    aggregateMap(env),
+    poisonSummary(env),
+    latestRirSnapshot(env),
+    listRaceWinners(env),
+  ]);
+  const extras = [poisonLine(poison), rirCardLine(snapshot), raceLine(winners)].filter(
+    (line): line is string => line !== null,
+  );
+  return { text: mapText(aggregate, extras), keyboard: mapKeyboard(), html: true };
+}
+
+function renderDnsTestView(env: Env): RenderedView {
+  const scriptUrl = `${publicOrigin(env)}/api/v1/dns-test.sh`;
+  return {
+    text: [
+      "🧪 <b>تست مسمومیت DNS — اول تست، بعد تجویز</b>",
+      "",
+      "این اسکریپت را روی همان دستگاهی که به DNSش شک دارید اجرا کنید (bash + python3 + curl، بدون نصب چیزی):",
+      `curl --proto '=https' --tlsv1.2 -sSf <code>${escapeHtml(scriptUrl)}</code> | bash -s -- «اپراتور» «شهر»`,
+      "",
+      "اسکریپت ۳ نام شاهد را از ۷ رزلور (سامانه، 1.1.1.1، DoH کلادفلر، شکن، ملی، 403، رادار) می‌پرسد و پاسخ‌های خام را می‌فرستد؛",
+      "سرور فقط جواب‌های سیاه‌چاله‌ای (loopback/0.0.0.0/10.10.34.34) را جعلی می‌شمارد و کارت «X از Y پاسخ جعلی» می‌دهد.",
+      "نتیجه به aggregate نقشهٔ سانسور بر اساس (اپراتور/شهر) هم اضافه می‌شود. هیچ IP یا شناسه‌ای ذخیره نمی‌شود.",
+    ].join("\n"),
+    keyboard: mapKeyboard(),
+    html: true,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DNS tunnel + sleeper cards (per deployment).
+// ---------------------------------------------------------------------------
+
+async function ownedDeploymentRow(env: Env, tenantId: string, deploymentId: string): Promise<DeploymentRow | null> {
+  return env.DB.prepare("SELECT * FROM deployments WHERE id = ? AND tenant_id = ?")
+    .bind(deploymentId, tenantId).first<DeploymentRow>();
+}
+
+async function renderTunnelView(env: Env, tenantId: string, deploymentId: string): Promise<RenderedView> {
+  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
+  if (!deployment) return { text: "استقرار پیدا نشد.", keyboard: omniBackMenuKeyboard(), html: false };
+  const report = await env.DB.prepare(
+    "SELECT tunnel_txt_rtt_ms, tunnel_status FROM agent_reports WHERE deployment_id = ? ORDER BY reported_at DESC LIMIT 1",
+  ).bind(deploymentId).first<{ tunnel_txt_rtt_ms: number | null; tunnel_status: string | null }>();
+  const suggestion = await mtuSuggestion(env);
+  const text = dnsTunnelCard({
+    deployment,
+    mtuSuggestion: suggestion?.mtu ?? null,
+    tunnelTxtRttMs: report?.tunnel_txt_rtt_ms ?? null,
+    tunnelStatus: report?.tunnel_status ?? null,
+  });
+  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
+  if (deployment.dns_tunnel_enabled !== 1) {
+    rows.push([{ text: "🛰️ فعال‌سازی delegation (NS+glue)", callback_data: `v13:tun:${deployment.id}:on` }]);
+  }
+  rows.push([
+    { text: "🔄 تازه‌سازی", callback_data: `v13:tun:${deployment.id}` },
+    { text: "📦 جزئیات استقرار", callback_data: `v13:dep:${deployment.id}` },
+  ]);
+  rows.push([{ text: "😴 خواب‌نت", callback_data: `v13:slp:${deployment.id}` }]);
+  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
+  return { text, keyboard: { inline_keyboard: rows }, html: true };
+}
+
+async function renderSleeperView(env: Env, tenantId: string, deploymentId: string): Promise<RenderedView> {
+  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
+  if (!deployment) return { text: "استقرار پیدا نشد.", keyboard: omniBackMenuKeyboard(), html: false };
+  const pending = await pendingSleeperCommand(env, deployment.id);
+  const text = sleeperCard({ deployment, pending, beaconName: beaconRecordName(deployment) });
+  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
+  if (deployment.role !== "sleeper") {
+    rows.push([{ text: "😴 فعال‌سازی sleeper (با پذیرش قیدها)", callback_data: `v13:slp:${deployment.id}:consent` }]);
+  } else {
+    rows.push([
+      { text: " بیدارباش فوری (wake)", callback_data: `v13:slp:${deployment.id}:cmd:wake` },
+      { text: "📣 گزارش فوری", callback_data: `v13:slp:${deployment.id}:cmd:report` },
+    ]);
+    rows.push([{ text: "📡 انتشار beacon", callback_data: `v13:slp:${deployment.id}:beacon` }]);
+    rows.push([{ text: "🌞 بازگشت به استاندارد", callback_data: `v13:slp:${deployment.id}:std` }]);
+  }
+  rows.push([
+    { text: "🔄 تازه‌سازی", callback_data: `v13:slp:${deployment.id}` },
+    { text: "🛰️ تونل DNS", callback_data: `v13:tun:${deployment.id}` },
+  ]);
+  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
+  return { text, keyboard: { inline_keyboard: rows }, html: true };
 }
 
 function mapStepKeyboard(items: readonly string[], prefix: string, labels?: Record<string, string>): TelegramInlineKeyboard {
@@ -1192,6 +1300,63 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     return true;
   }
 
+  // --- DNS poisoning self-test card ---
+  if (data === "v13:dnstest") {
+    await answerCallback(env, queryId, "تست مسمومیت DNS");
+    await edit(renderDnsTestView(env));
+    return true;
+  }
+
+  // --- DNS tunnel (slipnet/dnstt) ---
+  if (data.startsWith("v13:tun:")) {
+    const suffix = data.slice("v13:tun:".length);
+    const deploymentId = suffix.endsWith(":on") ? suffix.slice(0, -3) : suffix;
+    try {
+      if (suffix.endsWith(":on")) {
+        await answerCallback(env, queryId, "در حال ساخت delegation…");
+        await enableDnsTunnel(env, botPrincipal(tenantId, telegramUserId, ctx.displayName), deploymentId);
+      } else {
+        await answerCallback(env, queryId, "تونل DNS");
+      }
+      await edit(await renderTunnelView(env, tenantId, deploymentId));
+      return true;
+    } catch (error) {
+      await showCallbackError(env, chatId, tenantId, telegramUserId, error);
+      return true;
+    }
+  }
+
+  // --- Sleeper (خواب‌نت) ---
+  if (data.startsWith("v13:slp:")) {
+    const suffix = data.slice("v13:slp:".length);
+    const deploymentId = suffix.split(":")[0] ?? "";
+    const action = suffix.slice(deploymentId.length + 1);
+    const principal = botPrincipal(tenantId, telegramUserId, ctx.displayName);
+    try {
+      if (action === "consent") {
+        await answerCallback(env, queryId, "فعال‌سازی sleeper…");
+        await setDeploymentRole(env, principal, deploymentId, "sleeper", true);
+      } else if (action === "std") {
+        await answerCallback(env, queryId, "بازگشت به استاندارد…");
+        await setDeploymentRole(env, principal, deploymentId, "standard", false);
+      } else if (action === "beacon") {
+        await answerCallback(env, queryId, "انتشار beacon…");
+        await publishSleeperBeacon(env, principal, deploymentId);
+      } else if (action === "cmd:report" || action === "cmd:wake") {
+        const command: SleeperCommand = action === "cmd:wake" ? "wake" : "report-now";
+        await answerCallback(env, queryId, "صف‌شدن فرمان…");
+        await queueSleeperCommand(env, principal, deploymentId, command);
+      } else {
+        await answerCallback(env, queryId, "خواب‌نت");
+      }
+      await edit(await renderSleeperView(env, tenantId, deploymentId));
+      return true;
+    } catch (error) {
+      await showCallbackError(env, chatId, tenantId, telegramUserId, error);
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -1234,6 +1399,11 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
   const message = update.message;
   const user = message?.from;
   if (!message || !user || user.is_bot || message.chat.type !== "private" || String(message.chat.id) !== String(user.id)) {
+    return json({ ok: true });
+  }
+  // Reject stale/replayed updates: Telegram always sends `date` (unix seconds).
+  // Anything older than TELEGRAM_MAX_UPDATE_AGE_SECONDS is acknowledged but ignored.
+  if (typeof message.date === "number" && Math.abs(Date.now() / 1000 - message.date) > TELEGRAM_MAX_UPDATE_AGE_SECONDS) {
     return json({ ok: true });
   }
   const allowed = await rateLimit(env, `telegram:${user.id}`, TELEGRAM_RATE_LIMIT, TELEGRAM_RATE_WINDOW_SECONDS);

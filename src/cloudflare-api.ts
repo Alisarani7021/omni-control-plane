@@ -156,6 +156,22 @@ export async function upsertARecord(auth: CloudflareAuth, zoneId: string, hostna
   return created.id;
 }
 
+/** Upsert an NS delegation record (used by the DNS-tunnel provisioner). */
+export async function upsertNsRecord(auth: CloudflareAuth, zoneId: string, name: string, targets: string[]): Promise<string> {
+  const records = await cloudflareApi<Array<{ id: string; type: string; name: string }>>(
+    auth,
+    `/zones/${zoneId}/dns_records?type=NS&name=${encodeURIComponent(name)}&per_page=10`,
+  );
+  const payload = JSON.stringify({ type: "NS", name, content: targets[0] ?? "", ttl: 300, proxied: false });
+  const existing = records[0];
+  if (existing) {
+    const updated = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records/${existing.id}`, { method: "PUT", body: payload });
+    return updated.id;
+  }
+  const created = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records`, { method: "POST", body: payload });
+  return created.id;
+}
+
 /** Upsert a TXT record (used by the WhiteHole dead-drop writer). */
 export async function upsertTxtRecord(
   auth: CloudflareAuth,

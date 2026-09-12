@@ -1,3 +1,4 @@
+import { NET_MODE_LABELS, netModeForDeployment, type NetMode } from "./net-mode";
 import { escapeHtml, nowIso } from "./security";
 import type { Env } from "./types";
 
@@ -30,20 +31,30 @@ export interface NodeHealthRow {
   agent_status: string | null;
   agent_reported_at: string | null;
   sing_box_version: string | null;
+  role: string;
+  tunnel_txt_rtt_ms: number | null;
+  net_mode?: NetMode;
 }
 
 export async function listNodeHealth(env: Env, tenantId: string, limit = 10): Promise<NodeHealthRow[]> {
   const rows = await env.DB.prepare(
-    `SELECT d.id, d.worker_name, d.status, d.node_hostname, d.vps_ipv4, d.last_seen_at,
+    `SELECT d.id, d.worker_name, d.status, d.node_hostname, d.vps_ipv4, d.last_seen_at, d.role,
             (SELECT a.status FROM agent_reports a WHERE a.deployment_id = d.id ORDER BY a.reported_at DESC LIMIT 1) AS agent_status,
             (SELECT a.reported_at FROM agent_reports a WHERE a.deployment_id = d.id ORDER BY a.reported_at DESC LIMIT 1) AS agent_reported_at,
-            (SELECT a.sing_box_version FROM agent_reports a WHERE a.deployment_id = d.id ORDER BY a.reported_at DESC LIMIT 1) AS sing_box_version
+            (SELECT a.sing_box_version FROM agent_reports a WHERE a.deployment_id = d.id ORDER BY a.reported_at DESC LIMIT 1) AS sing_box_version,
+            (SELECT a.tunnel_txt_rtt_ms FROM agent_reports a WHERE a.deployment_id = d.id ORDER BY a.reported_at DESC LIMIT 1) AS tunnel_txt_rtt_ms
      FROM deployments d
      WHERE d.tenant_id = ?
      ORDER BY d.updated_at DESC
      LIMIT ?`,
   ).bind(tenantId, Math.min(25, Math.max(1, limit))).all<NodeHealthRow>();
-  return rows.results ?? [];
+  const list = rows.results ?? [];
+  await Promise.all(
+    list.map(async (row) => {
+      row.net_mode = await netModeForDeployment(env, row.id);
+    }),
+  );
+  return list;
 }
 
 export function healthVerdict(row: NodeHealthRow): HealthVerdict {
@@ -75,11 +86,17 @@ export function nodeHealthText(rows: NodeHealthRow[], radar?: { measured: number
   }
   const lines = rows.map((row) => {
     const verdict = HEALTH_LABELS[healthVerdict(row)];
+    const mode = row.net_mode ? ` · 🧭 ${NET_MODE_LABELS[row.net_mode]}` : "";
+    const tunnel = row.tunnel_txt_rtt_ms !== null && row.tunnel_txt_rtt_ms !== undefined
+      ? ` · 🩺 TXT تونل: ${row.tunnel_txt_rtt_ms}ms`
+      : "";
+    const role = row.role === "sleeper" ? " · 😴 sleeper" : "";
     return [
       `• <b>${escapeHtml(row.worker_name)}</b> — ${verdict}`,
       `  نود <code>${escapeHtml(row.node_hostname)}</code> · آخرین گزارش: ${escapeHtml(ageLabel(row.agent_reported_at ?? row.last_seen_at))}`
         + `${row.agent_status ? ` · وضعیت Agent: ${escapeHtml(row.agent_status)}` : ""}`
-        + `${row.sing_box_version ? ` · sing-box ${escapeHtml(row.sing_box_version)}` : ""}`,
+        + `${row.sing_box_version ? ` · sing-box ${escapeHtml(row.sing_box_version)}` : ""}`
+        + mode + tunnel + role,
     ].join("\n");
   });
   return [

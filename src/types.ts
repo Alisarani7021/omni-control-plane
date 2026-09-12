@@ -50,6 +50,15 @@ export interface DeploymentRow {
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
+  role: string;
+  dns_tunnel_enabled: number;
+  tunnel_hostname: string | null;
+  dnstt_public_key: string | null;
+  slipstream_spki_sha256: string | null;
+  tunnel_mtu: number | null;
+  sleeper_anchor_hour: number | null;
+  sleeper_consented_at: string | null;
+  beacon_published_at: string | null;
 }
 
 export interface ConnectionRow {
@@ -95,6 +104,9 @@ export interface AgentCompletePayload {
   hysteria2CertSha256: string;
   hysteria2SpkiSha256: string;
   configSha256: string;
+  /** Public-only tunnel material; private keys never leave the VPS. */
+  dnsttPublicKey?: string;
+  slipstreamSpkiSha256?: string;
 }
 
 export interface TelegramFrom {
@@ -116,6 +128,9 @@ export interface TelegramMessage {
   chat: TelegramChat;
   from?: TelegramFrom;
   text?: string;
+  /** Unix time of the message; Telegram always sends it. Used to drop stale webhook replays. */
+  /** Unix seconds — Telegram always sends this; used to reject stale/replayed updates. */
+  date: number;
 }
 
 export interface TelegramCallbackQuery {

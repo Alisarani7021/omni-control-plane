@@ -112,6 +112,7 @@ function privateMessage(text: string, updateId = 1001): TelegramUpdate {
       chat: { id: 555, type: "private" },
       from: { id: 555, is_bot: false, first_name: "Ali" },
       text,
+      date: Math.floor(Date.now() / 1000),
     },
   };
 }
@@ -189,10 +190,19 @@ describe("omni telegram webhook", () => {
     const { env } = createEnv();
     const update: TelegramUpdate = {
       update_id: 3001,
-      message: { message_id: 1, chat: { id: -100, type: "group" }, from: { id: 555, is_bot: false, first_name: "Ali" }, text: "/start" },
+      message: { message_id: 1, chat: { id: -100, type: "group" }, from: { id: 555, is_bot: false, first_name: "Ali" }, text: "/start", date: Math.floor(Date.now() / 1000) },
     };
     const response = await handleTelegramWebhook(webhookRequest(update), env);
     expect(await response.json()).toEqual({ ok: true });
+  });
+
+  it("ignores stale updates older than ten minutes", async () => {
+    const { env, statements } = createEnv();
+    const update = privateMessage("/start", 3101);
+    (update.message as { date: number }).date = Math.floor(Date.now() / 1000) - 3600;
+    const response = await handleTelegramWebhook(webhookRequest(update), env);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(statements.join(" ")).not.toContain("FROM tenants");
   });
 
   it("answers /start with the Omni main menu", async () => {

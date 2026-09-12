@@ -314,7 +314,10 @@ export async function rotateSubscriptionToken(
 
   await uploadWorkerScript(auth, current.account_id, current.worker_name, DATA_PLANE_SOURCE, {
     SUB_TOKEN_HASH: subscriptionTokenHash,
-    CONFIG_BUNDLE: JSON.stringify(buildReadyBundle(current, rotatedSecrets)),
+    CONFIG_BUNDLE: JSON.stringify(buildReadyBundle(current, rotatedSecrets, {
+      subscriptionToken: rotatedSecrets.subscriptionToken,
+      controlOrigin: new URL(env.PUBLIC_BASE_URL).origin,
+    })),
   });
   const now = nowIso();
   await env.DB.batch([
