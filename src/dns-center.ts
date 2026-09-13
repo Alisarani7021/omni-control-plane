@@ -15,7 +15,7 @@ import { nowIso } from "./security";
 import type { Env } from "./types";
 
 export const DNS_SCAN_MIN_PREFIX = 24; // at most 256 addresses per range
-export const DNS_SCAN_CHUNK = 32; // addresses probed per cron tick per range
+export const DNS_SCAN_CHUNK = 64; // addresses probed per cron tick per range
 export const DNS_SCAN_INTERVAL_MINUTES = 30;
 export const DNS_SCAN_PROBE_TIMEOUT_MS = 2_500;
 export const DNS_SCAN_RETENTION_HOURS = 24;
@@ -221,14 +221,19 @@ export async function scanDueRanges(env: Env): Promise<number> {
     const parsed = parseCidr(range.cidr);
     if (!parsed) continue;
     const slice = parsed.ips.slice(range.cursor, range.cursor + DNS_SCAN_CHUNK);
-    for (const ip of slice) {
-      const result = await probeResolver(ip);
-      await env.DB.prepare(
-        "INSERT INTO dns_scan_results (id, range_id, ip, ok, rtt_ms, verdict, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      )
-        .bind(crypto.randomUUID(), range.id, ip, result.verdict === "healthy" ? 1 : 0, result.rttMs, result.verdict, nowIso())
-        .run();
-      probed += 1;
+    for (let index = 0; index < slice.length; index += 8) {
+      const group = slice.slice(index, index + 8);
+      const results = await Promise.all(group.map((ip) => probeResolver(ip)));
+      for (let offset = 0; offset < group.length; offset += 1) {
+        const ip = group[offset] ?? "";
+        const result = results[offset] ?? { verdict: "unreachable" as DnsVerdict, rttMs: null };
+        await env.DB.prepare(
+          "INSERT INTO dns_scan_results (id, range_id, ip, ok, rtt_ms, verdict, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+          .bind(crypto.randomUUID(), range.id, ip, result.verdict === "healthy" ? 1 : 0, result.rttMs, result.verdict, nowIso())
+          .run();
+        probed += 1;
+      }
     }
     const nextCursor = range.cursor + slice.length;
     const done = nextCursor >= range.ips_total;
