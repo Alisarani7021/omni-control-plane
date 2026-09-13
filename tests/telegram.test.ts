@@ -785,7 +785,7 @@ describe("V13.5 dedicated net-intel keys", () => {
     const bodies: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string, init?: RequestInit) => {
+      vi.fn(async (_url: string, init?: RequestInit) => {
         bodies.push(String(init?.body ?? ""));
         return Response.json({ ok: true, result: true });
       }),

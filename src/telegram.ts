@@ -419,6 +419,8 @@ export function faErrorMessage(error: unknown): string | null {
         return "فقط استقرار ناموفق یا باطل‌شده حذف می‌شود؛ برای نود زنده اول «🛑 ابطال» را بزنید.";
       case "invalid_input":
         return "ورودی معتبر نیست؛ دوباره بررسی کنید.";
+      case "cloudflare_api_error":
+        return `کلادفلر این عملیات را رد کرد: ${error.message}`;
       default:
         return "خطای موقت؛ کمی بعد دوباره تلاش کنید.";
     }
@@ -1425,6 +1427,10 @@ async function showCallbackError(
   telegramUserId: string,
   error: unknown,
 ): Promise<void> {
+  console.error("telegram_callback_error", {
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
   const message = faErrorMessage(error);
   if (message) {
     await sendView(env, chatId, { text: message, keyboard: omniBackMenuKeyboard(), html: false });
@@ -2078,6 +2084,10 @@ async function answerError(
   queryId: string,
   error: unknown,
 ): Promise<void> {
+  console.error("telegram_callback_error", {
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  });
   const message = faErrorMessage(error);
   if (message) {
     await answerCallback(env, queryId, message, true);

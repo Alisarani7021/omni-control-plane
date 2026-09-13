@@ -1,3 +1,4 @@
+import { HttpError } from "./http";
 import { decryptJson, nowIso } from "./security";
 import type { ConnectionRow, Env } from "./types";
 
@@ -100,7 +101,8 @@ export async function cloudflareApi<T>(auth: CloudflareAuth, path: string, init?
   }
   if (!response.ok || !envelope.success) {
     const code = envelope.errors?.[0]?.code ?? response.status;
-    throw new Error(`Cloudflare API request failed with code ${code}`);
+    const detail = envelope.errors?.[0]?.message ?? "";
+    throw new HttpError(502, "cloudflare_api_error", `Cloudflare API ${path} failed: code ${code} ${detail}`.trim());
   }
   return envelope.result;
 }
