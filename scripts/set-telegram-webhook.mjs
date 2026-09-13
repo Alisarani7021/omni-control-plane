@@ -44,7 +44,7 @@ const commands = await telegramApi("setMyCommands", {
     { command: "donate", description: "اهدای کلید هوش مصنوعی" },
     { command: "health", description: "سلامت نودها" },
     { command: "usage", description: "مصرف و دارایی‌ها" },
-    { command: "phantom", description: "بستهٔ کانفیگ PHANTOM (20تایی / simple)" },
+    { command: "pack", description: "بستهٔ کانفیگ PHANTOM ۲۰تایی" },
     { command: "dnstt", description: "تونل DNS با dnstt" },
     { command: "cursor", description: "اتصال Cursor/VSCode" },
     { command: "cancel", description: "لغو فرایند نیمه‌کاره" },

@@ -23,6 +23,15 @@ const deployment: DeploymentRow = {
   last_seen_at: null,
   created_at: "2026-09-09T00:00:00.000Z",
   updated_at: "2026-09-09T00:00:00.000Z",
+  role: "standard",
+  dns_tunnel_enabled: 0,
+  tunnel_hostname: null,
+  dnstt_public_key: null,
+  slipstream_spki_sha256: null,
+  tunnel_mtu: null,
+  sleeper_anchor_hour: null,
+  sleeper_consented_at: null,
+  beacon_published_at: null,
 };
 
 const secrets: SecretBundle = {
@@ -68,8 +77,56 @@ describe("profile generation", () => {
     const bundle = buildReadyBundle(deployment, secrets);
     const vless = bundle.profiles.vless as { outbounds: Array<{ type: string; server_port: number }> };
     const hy2 = bundle.profiles.hysteria2 as { outbounds: Array<{ type: string }> };
-    expect(vless.outbounds).toEqual([expect.objectContaining({ type: "vless", server_port: 8443 })]);
+    expect(vless.outbounds).toEqual([
+      expect.objectContaining({ type: "vless", server_port: 8443 }),
+      expect.objectContaining({ type: "direct" }),
+    ]);
     expect(bundle.uris[0]).toContain(":8443?");
-    expect(hy2.outbounds).toEqual([expect.objectContaining({ type: "hysteria2" })]);
+    expect(hy2.outbounds).toEqual([
+      expect.objectContaining({ type: "hysteria2" }),
+      expect.objectContaining({ type: "direct" }),
+    ]);
+  });
+});
+
+describe("net-intel routing policy", () => {
+  const bundle = buildReadyBundle(deployment, secrets, {
+    subscriptionToken: secrets.subscriptionToken,
+    controlOrigin: "https://control.example.com",
+  });
+
+  it("routes national ranges and the DoH bootstrap direct", () => {
+    const profile = bundle.profiles.vless as {
+      dns: { servers: Array<{ tag: string }>; final: string };
+      route: { rules: Array<Record<string, unknown>>; rule_set: Array<{ tag: string; url?: string }> };
+    };
+    expect(profile.dns.final).toBe("doh-own");
+    expect(profile.dns.servers.map((server) => server.tag)).toContain("ir-direct");
+    const urls = profile.route.rule_set.map((set) => set.url ?? "").join(" ");
+    expect(urls).toContain("/api/v1/geoip-ir.json");
+    expect(urls).toContain("/api/v1/race-direct.json");
+    expect(JSON.stringify(profile.route.rules)).toContain("override_address");
+  });
+
+  it("pins the worker hostname without a hosts file", () => {
+    const profile = bundle.profiles.vless as { route: { rules: Array<Record<string, unknown>> } };
+    const pin = profile.route.rules.find((rule) => rule.domain === "sub.example.com");
+    expect(pin).toBeDefined();
+    expect(pin?.override_address).toBe("104.16.0.1");
+  });
+
+  it("emits three labelled sniff/fakedns states per protocol", () => {
+    expect(Object.keys(bundle.profileVariants)).toEqual([
+      "vless · sniff خاموش",
+      "vless · fakedns روشن",
+      "hysteria2 · sniff خاموش",
+      "hysteria2 · fakedns روشن",
+    ]);
+  });
+
+  it("ships a Clash YAML with hosts pinning and DIRECT national rules", () => {
+    expect(bundle.clashYaml).toContain("hosts:");
+    expect(bundle.clashYaml).toContain("sub.example.com: 104.16.0.1");
+    expect(bundle.clashYaml).toContain("GEOIP,IR,DIRECT");
   });
 });

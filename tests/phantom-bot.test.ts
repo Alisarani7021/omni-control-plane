@@ -1,15 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  generatePhantomConfigs,
-  generateSimpleConfigs,
-  normalizePhantomDomain,
-  normalizePhantomUuid,
-  phantomSubscription,
-  toClashYaml,
-  toSingBoxJson,
-  toV2RayBase64,
-} from "../src/phantom-gen";
-import {
   dnsttServerScript,
   isValidVpsIpv4,
   normalizeDnsttDomain,
@@ -21,7 +11,6 @@ import type { Env, TelegramUpdate } from "../src/types";
 
 const BOT = "OmniAiGateBot";
 const SECRET = "test-webhook-secret";
-const UUID = "d342d11e-d424-4583-b36e-524ab1f0afa4";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -57,6 +46,7 @@ function createEnv(options: { flowRow?: { flow: string; step: string; data: Reco
               }
               if (sql.includes("FROM telegram_wizards")) return null as unknown as T;
               if (sql.includes("COUNT(*)")) return { count: 0 } as unknown as T;
+              if (sql.includes("FROM ai_donations")) return null as unknown as T;
               return null as unknown as T;
             },
             all: async <T>() => ({ results: [] as T[] }),
@@ -95,6 +85,7 @@ function privateMessage(text: string, updateId = 1001): TelegramUpdate {
       chat: { id: 555, type: "private" },
       from: { id: 555, is_bot: false, first_name: "Ali" },
       text,
+      date: Math.floor(Date.now() / 1000),
     },
   };
 }
@@ -110,81 +101,6 @@ function callbackQuery(data: string, updateId = 2001): TelegramUpdate {
     },
   };
 }
-
-describe("phantom generator", () => {
-  it("builds the 7+7+6 tier package with the user's domain and uuid", () => {
-    const pkg = generatePhantomConfigs("my.example.ir", UUID);
-    expect(pkg.vless).toHaveLength(20);
-    expect(pkg.vless.filter((c) => c.tier === "L1-Arvan")).toHaveLength(7);
-    expect(pkg.vless.filter((c) => c.tier === "L2-CF")).toHaveLength(7);
-    expect(pkg.vless.filter((c) => c.tier === "L3-Warp")).toHaveLength(6);
-    for (const link of pkg.vless) {
-      expect(link.link).toContain(`vless://${UUID}@`);
-      expect(link.link).toContain(`host=my.example.ir`);
-    }
-    expect(pkg.ss).toHaveLength(2);
-    expect(pkg.hy).toHaveLength(2);
-  });
-
-  it("builds the honest 10-pack from the reliable L2 layer only", () => {
-    const simple = generateSimpleConfigs("my.example.ir", UUID);
-    expect(simple).toHaveLength(10);
-    for (const link of simple) expect(link.tier).toBe("L2-CF");
-  });
-
-  it("renders all three subscription formats", () => {
-    const pkg = generatePhantomConfigs("my.example.ir", UUID);
-    const lines = [...pkg.vless.map((c) => c.link), ...pkg.ss, ...pkg.hy];
-    const decoded = decodeURIComponent(escape(atob(toV2RayBase64(lines))));
-    expect(decoded.split("\n")).toHaveLength(24);
-
-    const yaml = toClashYaml(pkg.vless, "my.example.ir", UUID);
-    expect(yaml).toContain("proxy-groups:");
-    expect(yaml.match(/type: vless/gu)).toHaveLength(20);
-
-    const parsed = JSON.parse(toSingBoxJson(pkg.vless, pkg.ss, "my.example.ir", UUID)) as {
-      outbounds: Array<Record<string, unknown>>;
-    };
-    expect(parsed.outbounds).toHaveLength(22);
-  });
-
-  it("validates domain and uuid inputs", () => {
-    expect(normalizePhantomDomain("https://My.Example.ir/panel")).toBe("my.example.ir");
-    expect(normalizePhantomDomain("not a domain!")).toBeNull();
-    expect(normalizePhantomDomain("nodot")).toBeNull();
-    expect(normalizePhantomUuid(UUID)).toBe(UUID);
-    expect(normalizePhantomUuid("new")).toMatch(/^[0-9a-f-]{36}$/u);
-    expect(normalizePhantomUuid("short")).toMatch(/^[0-9a-f-]{36}$/u);
-  });
-});
-
-describe("phantom subscription route", () => {
-  it("serves v2ray, clash and singbox formats", async () => {
-    const { env } = createEnv();
-    const base = `https://control.example.com/api/v1/phantom?domain=my.example.ir&uuid=${UUID}`;
-    const v2ray = await phantomSubscription(new Request(`${base}&format=v2ray`), env);
-    expect(v2ray.status).toBe(200);
-    const body = await v2ray.text();
-    expect(decodeURIComponent(escape(atob(body))).split("\n")).toHaveLength(24);
-
-    const clash = await phantomSubscription(new Request(`${base}&format=clash`), env);
-    expect(clash.headers.get("Content-Type")).toContain("text/yaml");
-
-    const singbox = await phantomSubscription(new Request(`${base}&format=singbox`), env);
-    const parsed = JSON.parse(await singbox.text()) as { outbounds: unknown[] };
-    expect(parsed.outbounds).toHaveLength(22);
-  });
-
-  it("rejects missing or invalid params", async () => {
-    const { env } = createEnv();
-    await expect(
-      phantomSubscription(new Request("https://control.example.com/api/v1/phantom?domain=x"), env),
-    ).rejects.toMatchObject({ status: 400 });
-    await expect(
-      phantomSubscription(new Request("https://control.example.com/api/v1/phantom?domain=my.example.ir&uuid=nope"), env),
-    ).rejects.toMatchObject({ status: 400 });
-  });
-});
 
 describe("dnstt helper", () => {
   it("validates vps ip and tunnel domain", () => {
@@ -225,32 +141,31 @@ describe("dnstt helper", () => {
 });
 
 describe("restored bot sections", () => {
-  it("shows the restored sections in the main menu", () => {
+  it("shows every restored section in the main menu", () => {
     const callbacks = omniMainMenuKeyboard().inline_keyboard.flat().map((button) => button.callback_data);
-    expect(callbacks).toContain("v13:phantom");
-    expect(callbacks).toContain("v13:phantom-simple");
+    expect(callbacks).toContain("v13:pack");
+    expect(callbacks).toContain("v13:dep:new");
+    expect(callbacks).toContain("v13:dns");
+    expect(callbacks).toContain("v13:intel");
     expect(callbacks).toContain("v13:dnstt");
     expect(callbacks).toContain("v13:cursor");
   });
 
-  it("walks the PHANTOM wizard: domain → uuid → package", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, result: true })));
-    const { env, statements } = createEnv();
-    const start = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:phantom")), env);
-    expect(await start.json()).toEqual({ ok: true });
-    expect(statements.some((sql) => sql.includes("INSERT INTO telegram_flows"))).toBe(true);
-
-    const domainEnv = createEnv({ flowRow: { flow: "phantom", step: "phantom:domain", data: { mode: "full" } } }).env;
-    const domainStep = await handleTelegramWebhook(webhookRequest(privateMessage("my.example.ir")), domainEnv);
-    const domainPayload = (await domainStep.json()) as { text: string };
-    expect(domainPayload.text).toContain("UUID");
-
-    const uuidEnv = createEnv({ flowRow: { flow: "phantom", step: "phantom:uuid", data: { mode: "full", domain: "my.example.ir" } } }).env;
-    const uuidStep = await handleTelegramWebhook(webhookRequest(privateMessage("new", 1002)), uuidEnv);
-    const uuidPayload = (await uuidStep.json()) as { text: string };
-    expect(uuidPayload.text).toContain("PHANTOM 20تایی ساخته شد");
-    expect(uuidPayload.text).toContain("/api/v1/phantom?domain=my.example.ir");
-    expect(uuidPayload.text).toContain("لایه‌های L1/L3 دکوی آزمایشی‌اند");
+  it("opens the net-intel hub from the parent key", async () => {
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ method: String(url).split("/").pop() ?? "", body: JSON.parse(String(init.body)) as Record<string, unknown> });
+      return Response.json({ ok: true, result: true });
+    }));
+    const { env } = createEnv();
+    const response = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:intel")), env);
+    expect(await response.json()).toEqual({ ok: true });
+    const edit = calls.find((call) => call.method === "editMessageText");
+    expect(String(edit?.body?.["text"])).toContain("هوش شبکه V13.5");
+    const keyboard = edit?.body?.["reply_markup"] as { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    const callbacks = keyboard.inline_keyboard.flat().map((button) => button.callback_data);
+    expect(callbacks).toContain("v13:rir");
+    expect(callbacks).toContain("v13:netmode");
   });
 
   it("walks the dnstt wizard: vps → domain → package", async () => {
@@ -281,9 +196,16 @@ describe("restored bot sections", () => {
   });
 
   it("answers the Cursor button honestly instead of a fake key", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, result: true })));
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ method: String(url).split("/").pop() ?? "", body: JSON.parse(String(init.body)) as Record<string, unknown> });
+      return Response.json({ ok: true, result: true });
+    }));
     const { env } = createEnv();
     const response = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:cursor")), env);
     expect(await response.json()).toEqual({ ok: true });
+    const edit = calls.find((call) => call.method === "editMessageText");
+    expect(String(edit?.body?.["text"])).toContain("Cursor");
+    expect(String(edit?.body?.["text"])).not.toContain("sk-omn" + "i");
   });
 });

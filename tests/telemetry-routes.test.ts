@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanIpFeed, submitCleanIpReport, submitMapReport, whiteHoleReader } from "../src/telemetry-routes";
+import { cleanIpFeed, phantomPackFeed, submitCleanIpReport, submitMapReport, whiteHoleReader } from "../src/telemetry-routes";
 import type { Env } from "../src/types";
 
 interface Captured {
@@ -134,5 +134,47 @@ describe("whitehole reader script", () => {
 
     await expect(whiteHoleReader(new Request("https://control.example.com/api/v1/whitehole/fetch.sh?domain=$(id)"), testEnv))
       .rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("phantom pack feed", () => {
+  const UUID = "11111111-2222-3333-4444-555555555555";
+  const get = (format: string, domain = "example.com") =>
+    new Request(`https://control.example.com/api/v1/pack?domain=${domain}&uuid=${UUID}&format=${format}`, {
+      headers: { "CF-Connecting-IP": "203.0.113.9" },
+    });
+
+  it("serves all three client formats from the same input", async () => {
+    const { env: testEnv, captured } = env();
+    const subscription = await phantomPackFeed(get("v2ray"), testEnv);
+    expect(subscription.headers.get("Cache-Control")).toBe("no-store");
+    expect(atob(await subscription.text()).split("\n")).toHaveLength(20);
+
+    const { env: clashEnv } = env();
+    const clash = await phantomPackFeed(get("clash"), clashEnv);
+    expect(clash.headers.get("Content-Type")).toContain("text/yaml");
+    expect(await clash.text()).toContain("proxy-groups:");
+
+    const { env: singEnv } = env();
+    const singBox = JSON.parse(await (await phantomPackFeed(get("singbox"), singEnv)).text()) as { outbounds: unknown[] };
+    expect(singBox.outbounds).toHaveLength(21);
+
+    const { env: jsonEnv } = env();
+    const body = await (await phantomPackFeed(get("json"), jsonEnv)).json() as { counts: Record<string, number>; note: string };
+    const counts = body.counts as Record<string, number>;
+    expect((counts["vless"] ?? 0) + (counts["ss"] ?? 0) + (counts["hysteria2"] ?? 0)).toBe(20);
+    expect(body.note).toContain("never stored");
+    // Generation is stateless: the only SQL is the rate bucket.
+    expect(captured.every((item) => item.sql.includes("rate_limits"))).toBe(true);
+  });
+
+  it("refuses a malformed domain and an oversized uuid", async () => {
+    const { env: testEnv } = env();
+    await expect(phantomPackFeed(get("json", "bad host"), testEnv)).rejects.toMatchObject({ status: 400, code: "invalid_domain" });
+    const { env: longEnv } = env();
+    const request = new Request(`https://control.example.com/api/v1/pack?domain=example.com&uuid=${"a".repeat(80)}`, {
+      headers: { "CF-Connecting-IP": "203.0.113.10" },
+    });
+    await expect(phantomPackFeed(request, longEnv)).rejects.toMatchObject({ status: 400 });
   });
 });

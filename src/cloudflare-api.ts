@@ -1,3 +1,4 @@
+import { HttpError } from "./http";
 import { decryptJson, nowIso } from "./security";
 import type { ConnectionRow, Env } from "./types";
 
@@ -16,7 +17,7 @@ export async function getConnection(env: Env, connectionId: string, tenantId?: s
   const connection = tenantId
     ? await env.DB.prepare(query).bind(connectionId, tenantId).first<ConnectionRow>()
     : await env.DB.prepare(query).bind(connectionId).first<ConnectionRow>();
-  if (!connection) throw new Error("Cloudflare connection not found");
+  if (!connection) throw new HttpError(409, "cloudflare_reconnect_required", "Cloudflare connection not found");
   return connection;
 }
 
@@ -100,7 +101,8 @@ export async function cloudflareApi<T>(auth: CloudflareAuth, path: string, init?
   }
   if (!response.ok || !envelope.success) {
     const code = envelope.errors?.[0]?.code ?? response.status;
-    throw new Error(`Cloudflare API request failed with code ${code}`);
+    const detail = envelope.errors?.[0]?.message ?? "";
+    throw new HttpError(502, "cloudflare_api_error", `Cloudflare API ${path} failed: code ${code} ${detail}`.trim());
   }
   return envelope.result;
 }
@@ -156,6 +158,22 @@ export async function upsertARecord(auth: CloudflareAuth, zoneId: string, hostna
   return created.id;
 }
 
+/** Upsert an NS delegation record (used by the DNS-tunnel provisioner). */
+export async function upsertNsRecord(auth: CloudflareAuth, zoneId: string, name: string, targets: string[]): Promise<string> {
+  const records = await cloudflareApi<Array<{ id: string; type: string; name: string }>>(
+    auth,
+    `/zones/${zoneId}/dns_records?type=NS&name=${encodeURIComponent(name)}&per_page=10`,
+  );
+  const payload = JSON.stringify({ type: "NS", name, content: targets[0] ?? "", ttl: 300, proxied: false });
+  const existing = records[0];
+  if (existing) {
+    const updated = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records/${existing.id}`, { method: "PUT", body: payload });
+    return updated.id;
+  }
+  const created = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records`, { method: "POST", body: payload });
+  return created.id;
+}
+
 /** Upsert a TXT record (used by the WhiteHole dead-drop writer). */
 export async function upsertTxtRecord(
   auth: CloudflareAuth,
@@ -175,6 +193,35 @@ export async function upsertTxtRecord(
     return updated.id;
   }
   const created = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records`, { method: "POST", body: payload });
+  return created.id;
+}
+
+/** Upsert any simple record type (TXT/SVCB/CNAME/…) by exact name. */
+export async function upsertDnsRecord(
+  auth: CloudflareAuth,
+  zoneId: string,
+  type: string,
+  name: string,
+  content: string,
+  ttl = 300,
+): Promise<string> {
+  const records = await cloudflareApi<Array<{ id: string }>>(
+    auth,
+    `/zones/${zoneId}/dns_records?type=${encodeURIComponent(type)}&name=${encodeURIComponent(name)}&per_page=10`,
+  );
+  const payload = JSON.stringify({ type, name, content, ttl, proxied: false });
+  const existing = records[0];
+  if (existing) {
+    const updated = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records/${existing.id}`, {
+      method: "PUT",
+      body: payload,
+    });
+    return updated.id;
+  }
+  const created = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records`, {
+    method: "POST",
+    body: payload,
+  });
   return created.id;
 }
 

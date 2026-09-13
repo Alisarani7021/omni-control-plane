@@ -216,13 +216,14 @@ export async function aggregateMap(env: Env, windowHours = MAP_WINDOW_HOURS): Pr
   };
 }
 
-export function mapText(aggregate: MapAggregate): string {
+export function mapText(aggregate: MapAggregate, extras: string[] = []): string {
   if (aggregate.totalReports === 0) {
     return [
       "🗺 <b>نقشه زندهٔ سانسور</b>",
       "",
       `در ${aggregate.windowHours} ساعت گذشته گزارشی ثبت نشده است.`,
       "با «📤 ثبت گزارش» وضعیت اتصال‌تان را اضافه کنید؛ نقشه فقط از گزارش‌های واقعی ساخته می‌شود.",
+      ...extras,
     ].join("\n");
   }
   const cells = aggregate.cells.slice(0, 8).map((cell) => [
@@ -240,6 +241,8 @@ export function mapText(aggregate: MapAggregate): string {
     "",
     "🚚 <b>وضعیت ترانسپورت‌ها:</b>",
     transports,
+    "",
+    ...extras,
     "",
     `🧾 ${aggregate.totalReports} گزارش ناشناس در بازه — بدون IP، بدون شناسه کاربر.`,
   ].join("\n");
