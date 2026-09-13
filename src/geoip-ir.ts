@@ -13,7 +13,7 @@ import type { Env } from "./types";
  * Only public registry data is stored; nothing is guessed.
  */
 
-export const RIR_IR_URL = "https://ftp.ripe.net/pub/stats/irnic/delegated-irnic-extended-latest";
+export const RIR_IR_URL = "https://ftp.apnic.net/pub/stats/apnic/delegated-apnic-extended-latest";
 export const RIR_SNAPSHOT_RETENTION_DAYS = 14;
 export const RIR_FETCH_TIMEOUT_MS = 30_000;
 
@@ -29,7 +29,7 @@ export function parseDelegatedIrnic(text: string): IspRange[] {
     if (line.startsWith("#") || line.trim().length === 0) continue;
     const parts = line.split("|");
     const [, cc, type, start, lengthRaw] = parts;
-    if (parts[0] !== "irnic" || cc !== "IR" || !start || !lengthRaw) continue;
+    if (cc !== "IR" || !start || !lengthRaw) continue; // IRNIC rows arrive via APNIC (NIR) in the RIR exchange
     if (type === "ipv4") {
       const hosts = Number(lengthRaw);
       if (!Number.isFinite(hosts) || hosts <= 0 || (hosts & (hosts - 1)) !== 0) continue;
@@ -134,7 +134,7 @@ export function rirCardLine(snapshot: RirSnapshotRow | null): string {
   }
   const plus = snapshot.added > 0 ? `+${snapshot.added}` : "۰";
   const minus = snapshot.removed > 0 ? `−${snapshot.removed}` : "۰";
-  return `🇮🇷 رنج‌های ملی: منبع RIPE/IRNIC · ${plus}/${minus} نسبت به پیشین · ${snapshot.range_count} رنج · sha256 <code>${snapshot.sha256.slice(0, 12)}</code> · ${snapshot.day}`;
+  return `🇮🇷 رنج‌های ملی: منبع APNIC stats (ردیف‌های IR) · ${plus}/${minus} نسبت به پیشین · ${snapshot.range_count} رنج · sha256 <code>${snapshot.sha256.slice(0, 12)}</code> · ${snapshot.day}`;
 }
 
 /** sing-box remote rule-set (format: source JSON) for «مستقیم داخل کشور». */

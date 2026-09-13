@@ -6,7 +6,8 @@ const SAMPLE = [
   "irnic|IR|ipv4|2.144.0.0|65536|20100101|allocated|4c2f",
   "irnic|IR|ipv4|5.56.0.0|8192|20110101|allocated|4c2f",
   "irnic|IR|ipv6|2001:db8::|32|20120101|allocated",
-  "irnic|DE|ipv4|7.0.0.0|256|20130101|allocated",
+  "apnic|IR|ipv4|5.144.0.0|8192|20150101|allocated",
+  "apnic|DE|ipv4|7.0.0.0|256|20130101|allocated",
   "irnic|IR|ipv4|9.9.9.0|100|20140101|allocated", // non power-of-two length must be ignored
 ].join("\n");
 
@@ -17,6 +18,7 @@ describe("RIPE/IRNIC national ranges", () => {
       { cidr: "2.144.0.0/16", family: "ipv4" },
       { cidr: "5.56.0.0/19", family: "ipv4" },
       { cidr: "2001:db8::/32", family: "ipv6" },
+      { cidr: "5.144.0.0/19", family: "ipv4" },
     ]);
   });
 
@@ -32,7 +34,7 @@ describe("RIPE/IRNIC national ranges", () => {
     expect(ruleSet.rules[0]?.ip_cidr).toEqual(["2.144.0.0/16"]);
   });
 
-  it("reads the public IRNIC registry", () => {
-    expect(RIR_IR_URL).toContain("delegated-irnic-extended-latest");
+  it("reads the public APNIC stats (IR rows via NIR)", () => {
+    expect(RIR_IR_URL).toContain("delegated-apnic-extended-latest");
   });
 });

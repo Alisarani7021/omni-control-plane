@@ -17,7 +17,7 @@ export async function getConnection(env: Env, connectionId: string, tenantId?: s
   const connection = tenantId
     ? await env.DB.prepare(query).bind(connectionId, tenantId).first<ConnectionRow>()
     : await env.DB.prepare(query).bind(connectionId).first<ConnectionRow>();
-  if (!connection) throw new Error("Cloudflare connection not found");
+  if (!connection) throw new HttpError(409, "cloudflare_reconnect_required", "Cloudflare connection not found");
   return connection;
 }
 

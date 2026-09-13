@@ -819,6 +819,34 @@ describe("V13.5 dedicated net-intel keys", () => {
     expect(callbacks).toContain("v13:map");
   });
 
+  it("builds a copy-paste-ready poison-test command from operator and city keys", async () => {
+    const { env } = createEnv();
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(String(init?.body ?? ""));
+        return Response.json({ ok: true, result: true });
+      }),
+    );
+    const pick = (data: string, updateId: number): TelegramUpdate => ({
+      update_id: updateId,
+      callback_query: {
+        id: `cq-${updateId}`,
+        data,
+        from: { id: 555, is_bot: false, first_name: "Ali" },
+        message: { message_id: 44, chat: { id: 555, type: "private" } },
+      },
+    });
+    await handleTelegramWebhook(webhookRequest(pick("v13:dnstest:isp:همراه‌اول", 4201)), env);
+    const cityStep = bodies.at(-1) ?? "";
+    expect(cityStep).toContain("v13:dnstest:run:همراه‌اول:تهران");
+    await handleTelegramWebhook(webhookRequest(pick("v13:dnstest:run:همراه‌اول:تهران", 4202)), env);
+    const finalStep = bodies.at(-1) ?? "";
+    expect(finalStep).toContain("bash -s -- &quot;همراه‌اول&quot; &quot;تهران&quot;");
+    expect(finalStep).toContain("/api/v1/dns-test.sh");
+  });
+
   it("renders the standalone network-state card honestly without data", async () => {
     const { env } = createEnv();
     const update: TelegramUpdate = {

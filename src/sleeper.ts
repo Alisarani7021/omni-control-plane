@@ -1,4 +1,5 @@
 import { getConnection, getValidCloudflareAuth, upsertTxtRecord } from "./cloudflare-api";
+import type { ConnectionRow } from "./types";
 import { audit } from "./db";
 import { HttpError } from "./http";
 import { escapeHtml, nowIso } from "./security";
@@ -132,7 +133,31 @@ export async function queueSleeperCommand(env: Env, principal: SessionPrincipal,
 /** Publish (or refresh) the read-only TXT beacon in the tenant's own zone. */
 export async function publishSleeperBeacon(env: Env, principal: SessionPrincipal, deploymentId: string): Promise<string> {
   const deployment = await loadOwnedDeployment(env, principal, deploymentId);
-  const connection = await getConnection(env, deployment.oauth_connection_id, principal.tenantId);
+  let connection: ConnectionRow;
+  try {
+    connection = await getConnection(env, deployment.oauth_connection_id, principal.tenantId);
+  } catch (error) {
+    // The deployment's connection row may have been scrubbed/disconnected: rebind to
+    // the tenant's newest live connection that covers the same zone, instead of failing.
+    const fallback = await env.DB.prepare(
+      "SELECT id FROM oauth_connections WHERE tenant_id = ? AND resource_zone_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+    )
+      .bind(principal.tenantId, deployment.zone_id)
+      .first<{ id: string }>();
+    if (!fallback) throw error;
+    await env.DB.prepare("UPDATE deployments SET oauth_connection_id = ?, updated_at = ? WHERE id = ?")
+      .bind(fallback.id, nowIso(), deploymentId)
+      .run();
+    await audit(env, {
+      tenantId: principal.tenantId,
+      actorType: "system",
+      action: "deployment.connection.rebind",
+      resourceType: "deployment",
+      resourceId: deploymentId,
+      outcome: "success",
+    });
+    connection = await getConnection(env, fallback.id, principal.tenantId);
+  }
   if (connection.resource_zone_id !== deployment.zone_id) {
     throw new HttpError(409, "cloudflare_reconnect_required", "Connection zone is missing; reconnect the Cloudflare connection");
   }

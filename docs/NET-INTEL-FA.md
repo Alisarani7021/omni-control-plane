@@ -61,15 +61,15 @@
 resolver زنجیره‌ای `clean-pin` روی `tcp://1.1.1.1`). در Clash معادل آن
 `hosts: <worker>: 104.16.0.1` است. هیچ‌کدام به فایل hosts دستگاه وابسته نیستند.
 
-## ۴. رنج‌های ملی RIPE/IRNIC (`src/geoip-ir.ts`)
+## ۴. رنج‌های ملی از APNIC stats (`src/geoip-ir.ts`)
 
-- cron روزانه `delegated-irnic-extended-latest` را از `ftp.ripe.net` می‌گیرد،
+- cron روزانه `delegated-apnic-extended-latest` را از `ftp.apnic.net` می‌گیرد (ردیف‌های cc=IR؛ IRNIC در تبادل RIR نیست و رنج‌هایش_via APNIC می‌آید)،
   sha256 و تعداد رنج را با snapshot قبلی diff می‌کند (`rir_ir_snapshots`،
   نگهداری ۱۴ روز).
-- کارت ربات: «🇮🇷 رنج‌های ملی: منبع RIPE/IRNIC · +۱۴۲ رنج · -۳ رنج · امروز».
+- کارت ربات: «🇮 رنج‌های ملی: منبع APNIC stats · +۱۴۲ رنج · -۳ رنج · امروز».
 - خروجی عمومی `GET /api/v1/geoip-ir.json` یک rule-set نسخهٔ ۲ sing-box است که
   مستقیماً در پروفیل‌ها مصرف می‌شود.
-- فقط ردیف‌های `irnic|IR` با طول توان‌دو پذیرفته می‌شوند؛ ردیف‌های خارجی/نامعتبر
+- فقط ردیف‌های با cc=IR و طول توان‌دو پذیرفته می‌شوند؛ ردیف‌های خارجی/نامعتبر
   نادیده گرفته می‌شوند.
 
 ## ۵. تونل DNS روی VPS کاربر (`src/dns-tunnel.ts` + بخش بوت‌استرپ `src/agent.ts`)

@@ -998,28 +998,63 @@ async function renderMapView(env: Env): Promise<RenderedView> {
   return { text: mapText(aggregate, extras), keyboard: mapKeyboard(), html: true };
 }
 
-function renderDnsTestView(env: Env): RenderedView {
+const DNSTEST_CITIES: readonly string[] = [
+  "تهران", "مشهد", "اصفهان", "شیراز", "تبریز", "کرج", "قم", "اهواز",
+  "کرمان", "رشت", "ارومیه", "زاهدان", "همدان", "یزد", "بندرعباس", "اردبیل",
+];
+
+function renderDnsTestView(env: Env, isp?: string, city?: string): RenderedView {
   const scriptUrl = `${publicOrigin(env)}/api/v1/dns-test.sh`;
+  const intro = [
+    "🧪 <b>تست مسمومیت DNS — اول تست، بعد تجویز</b>",
+    "",
+    "اسکریپت ۳ نام شاهد را از ۷ رزلور (سامانه، 1.1.1.1، DoH کلادفلر، شکن، ملی، 403، رادار) می‌پرسد؛",
+    "سرور فقط جواب‌های سیاه‌چاله‌ای (loopback/0.0.0.0/10.10.34.34) را جعلی می‌شمارد و کارت «X از Y پاسخ جعلی» می‌دهد.",
+    "نتیجه به aggregate نقشهٔ سانسور بر اساس (اپراتور/شهر) هم اضافه می‌شود. هیچ IP یا شناسه‌ای ذخیره نمی‌شود.",
+  ];
+  if (!isp) {
+    return {
+      text: [...intro, "", "۱) اول اپراتور را از دکمه‌ها انتخاب کنید تا فرمان آمادهٔ کپی ساخته شود."].join("\n"),
+      keyboard: {
+        inline_keyboard: [
+          ...chunkButtons(MAP_ISPS, 2, (item) => ({ text: item, callback_data: `v13:dnstest:isp:${item}` })),
+          [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }],
+          ...homeRow(),
+        ],
+      },
+      html: true,
+    };
+  }
+  if (!city) {
+    return {
+      text: [...intro, "", `۲) اپراتور «${escapeHtml(isp)}» ثبت شد؛ حالا شهر را انتخاب کنید.`].join("\n"),
+      keyboard: {
+        inline_keyboard: [
+          ...chunkButtons(DNSTEST_CITIES, 2, (item) => ({ text: item, callback_data: `v13:dnstest:run:${isp}:${item}` })),
+          [{ text: "↩️ تغییر اپراتور", callback_data: "v13:dnstest" }],
+          [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }],
+          ...homeRow(),
+        ],
+      },
+      html: true,
+    };
+  }
+  const command = `curl --proto '=https' --tlsv1.2 -sSf ${scriptUrl} | bash -s -- "${isp}" "${city}"`;
   return {
     text: [
-      "🧪 <b>تست مسمومیت DNS — اول تست، بعد تجویز</b>",
+      ...intro,
       "",
-      "این اسکریپت را روی همان دستگاهی که به DNSش شک دارید اجرا کنید (bash + python3 + curl، بدون نصب چیزی):",
-      `curl --proto '=https' --tlsv1.2 -sSf <code>${escapeHtml(scriptUrl)}</code> | bash -s -- «اپراتور» «شهر»`,
-      "",
-      "اسکریپت ۳ نام شاهد را از ۷ رزلور (سامانه، 1.1.1.1، DoH کلادفلر، شکن، ملی، 403، رادار) می‌پرسد و پاسخ‌های خام را می‌فرستد؛",
-      "سرور فقط جواب‌های سیاه‌چاله‌ای (loopback/0.0.0.0/10.10.34.34) را جعلی می‌شمارد و کارت «X از Y پاسخ جعلی» می‌دهد.",
-      "نتیجه به aggregate نقشهٔ سانسور بر اساس (اپراتور/شهر) هم اضافه می‌شود. هیچ IP یا شناسه‌ای ذخیره نمی‌شود.",
-      "",
-      "نحوهٔ اجرا، قدم‌به‌قدم:",
-      "۱) خط curl بالا را کپی کنید و در ترمینال همان دستگاه (سرور یا گوشی با termux) اجرا کنید؛ به‌جای «اپراتور» و «شهر» مقدار واقعی بگذارید.",
-      "۲) اسکریپت خودش ۷ رزلور را می‌پرسد و پاسخ خام را می‌فرستد؛ چند ثانیه بیشتر طول نمی‌کشد.",
-      "۳) کارت تجمیعی («X از Y پاسخ جعلی بود») و نقشهٔ نت ملی با همان دادهٔ واقعی به‌روز می‌شوند.",
-      "۴) هر وقت خواستید تکرار کنید؛ هیچ IP یا شناسه‌ای ذخیره نمی‌شود.",
+      `✅ اپراتور: <b>${escapeHtml(isp)}</b> · شهر: <b>${escapeHtml(city)}</b>`,
+      "۳) فقط همین یک خط را یک‌جا کپی و در ترمینال همان دستگاه (سرور، یا Termux گوشی) پیست کنید؛ هیچ چیزی نصب نمی‌شود (bash + python3 + curl کافی است):",
+      `<code>${escapeHtml(command)}</code>`,
+      "۴) چند ثانیه بعد کارت تجمیعی و نقشهٔ نت ملی با همان دادهٔ واقعی به‌روز می‌شوند؛ تکرارش آزاد است.",
     ].join("\n"),
     keyboard: {
       inline_keyboard: [
-        [{ text: "🔄 تازه‌سازی", callback_data: "v13:dnstest" }],
+        [
+          { text: "↩️ تغییر شهر", callback_data: `v13:dnstest:isp:${isp}` },
+          { text: "↩️ تغییر اپراتور", callback_data: "v13:dnstest" },
+        ],
         [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }],
         ...homeRow(),
       ],
@@ -1172,9 +1207,9 @@ async function renderTunnelView(env: Env, tenantId: string, deploymentId: string
     }),
     "",
     "نحوهٔ اجرا، قدم‌به‌قدم:",
-    "۱) دکمهٔ «فعال‌سازی delegation» بزنید تا رکورد NS برای t.<zone> با همان Token اسکوپ‌شدهٔ Cloudflare خودتان ساخته شود (یک فراخوانی، بدون secret جدید).",
+    "۱) دکمهٔ «فعال‌سازی delegation» بزنید تا رکورد NS برای زیردامنهٔ t (مثل t.example.com) با همان Token اسکوپ‌شدهٔ Cloudflare خودتان ساخته شود (یک فراخوانی، بدون secret جدید).",
     "۲) از «📦 جزئیات استقرار» دستور بوت‌استرپ جدید بگیرید و روی VPS اجرا کنید؛ واحدهای dnstt-server و slipstream-server نصب و کلیدها فقط روی خود VPS ساخته می‌شوند.",
-    "۳) خط slipnet:// همین کارت را کپی کنید و در اپ SlipNet در فیلد «import / paste configuration» بچسبانید؛ برای Slipstream فقط دامنهٔ t.<zone> کافی است.",
+    "۳) خط slipnet:// همین کارت را کپی کنید و در اپ SlipNet در فیلد «import / paste configuration» بچسبانید؛ برای Slipstream فقط همان زیردامنهٔ t کافی است.",
     "۴) اثبات زنده‌بودن: «🩺 TXT rtt» روی کارت سلامت نودها (round-trip رکورد TXT، ≤۲ ثانیه). MTU هم با پنج پروب ۵۱۲ تا ۱۴۰۰ خودکار اندازه گرفته می‌شود.",
   ].join("\n");
   const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
@@ -1752,10 +1787,29 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     return true;
   }
 
-  // --- DNS poisoning self-test card ---
+  // --- DNS poisoning self-test card + operator/city picker ---
   if (data === "v13:dnstest") {
     await answerCallback(env, queryId, "تست مسمومیت DNS");
     await edit(renderDnsTestView(env));
+    return true;
+  }
+  if (data.startsWith("v13:dnstest:isp:")) {
+    const isp = data.slice("v13:dnstest:isp:".length);
+    await answerCallback(env, queryId, isp);
+    await edit(MAP_ISPS.includes(isp) ? renderDnsTestView(env, isp) : renderDnsTestView(env));
+    return true;
+  }
+  if (data.startsWith("v13:dnstest:run:")) {
+    const rest = data.slice("v13:dnstest:run:".length);
+    const sep = rest.indexOf(":");
+    const isp = sep === -1 ? rest : rest.slice(0, sep);
+    const city = sep === -1 ? "" : rest.slice(sep + 1);
+    await answerCallback(env, queryId, `${isp} · ${city}`);
+    await edit(
+      MAP_ISPS.includes(isp) && DNSTEST_CITIES.includes(city)
+        ? renderDnsTestView(env, isp, city)
+        : renderDnsTestView(env),
+    );
     return true;
   }
 
