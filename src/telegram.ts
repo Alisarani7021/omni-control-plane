@@ -1632,6 +1632,7 @@ async function showCallbackError(
   tenantId: string,
   telegramUserId: string,
   error: unknown,
+  data = "",
 ): Promise<void> {
   console.error("telegram_callback_error", {
     error: error instanceof Error ? error.message : String(error),
@@ -1640,6 +1641,17 @@ async function showCallbackError(
   const message = faErrorMessage(error);
   if (message) {
     await sendView(env, chatId, { text: message, keyboard: omniBackMenuKeyboard(), html: false });
+    return;
+  }
+  // The DNS center and the panel product never route users into the dedicated
+  // env login; they get the standalone one-time connect form instead.
+  const next = data.startsWith("v13:dns") || data.startsWith("v13:dnstest")
+    ? "dns"
+    : data.startsWith("v13:panel") || data.startsWith("v13:dep")
+      ? "panel"
+      : null;
+  if (next) {
+    await sendView(env, chatId, await renderStandaloneConnectPrompt(env, tenantId, next));
     return;
   }
   await sendView(
@@ -1837,7 +1849,7 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
       });
       return true;
     } catch (error) {
-      await showCallbackError(env, chatId, tenantId, telegramUserId, error);
+      await showCallbackError(env, chatId, tenantId, telegramUserId, error, data);
       return true;
     }
   }
@@ -2046,7 +2058,7 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
       await edit(await renderBuilderCard(env, principal, kind === "slip" ? null : connectionId, kind));
       return true;
     } catch (error) {
-      await showCallbackError(env, chatId, tenantId, telegramUserId, error);
+      await showCallbackError(env, chatId, tenantId, telegramUserId, error, data);
       return true;
     }
   }
@@ -2728,7 +2740,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
           });
         } else {
           await answerCallback(env, query.id, "اتصال Cloudflare منقضی شده است.");
-          await sendView(env, chatId, await renderConnectPrompt(env, tenant.id, telegramUserId, "➕ برای ساخت استقرار اول دوباره وصل شوید."));
+          await sendView(env, chatId, await renderStandaloneConnectPrompt(env, tenant.id, "panel"));
         }
       }
       return json({ ok: true });
