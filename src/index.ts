@@ -10,6 +10,8 @@ import {
   whiteHoleReader,
 } from "./telemetry-routes";
 import { purgeExpiredWhiteHoleDrops } from "./whitehole";
+import { phantomSubscription } from "./phantom-gen";
+import { serveDnsttScript } from "./dnstt";
 import { authenticated, loginFromOneTimeLink, loginRateLimit, logout } from "./auth";
 import { eraseExpiredApiTokens } from "./cloudflare-api";
 import { appPage, landingPage, legalPage, logoSvg, omniPage } from "./dashboard";
@@ -85,6 +87,14 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path === "/api/v1/whitehole/fetch.sh") {
     const wrongMethod = only(request, ["GET"]);
     return wrongMethod ?? whiteHoleReader(request, env);
+  }
+  if (path === "/api/v1/phantom") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? phantomSubscription(request, env);
+  }
+  if (path === "/api/v1/dnstt/server.sh") {
+    const wrongMethod = only(request, ["GET"]);
+    return wrongMethod ?? serveDnsttScript(request, env);
   }
   if (path === "/login") {
     const wrongMethod = only(request, ["GET"]);

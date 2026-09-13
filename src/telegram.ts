@@ -30,6 +30,7 @@ import {
   type CleanIpRow,
 } from "./clean-ip";
 import { aggregateMap, mapText, MAP_ISPS, MAP_TRANSPORT_LABELS, MAP_TRANSPORTS } from "./censorship-map";
+import { renderDnsttIntroText } from "./dnstt";
 import { clearWhiteHoleDrop, latestWhiteHoleDrop, publishWhiteHoleDrop, whiteHoleReadCommands, whiteHoleText } from "./whitehole";
 import {
   DONATION_STATUS_LABELS,
@@ -44,7 +45,9 @@ import {
 import {
   clearPanelFlow,
   flowPrompt,
+  FLOW_STEP_DNSTT_VPS,
   FLOW_STEP_DONATE_KEY,
+  FLOW_STEP_PHANTOM_DOMAIN,
   FLOW_STEP_MAP_CITY,
   FLOW_STEP_MAP_ISP,
   FLOW_STEP_MAP_RTT,
@@ -95,6 +98,7 @@ const TELEGRAM_RATE_WINDOW_SECONDS = 60;
 export const V13_COMMANDS = [
   "start", "panel", "status", "help", "cancel",
   "cleanip", "map", "whitehole", "donate", "health", "usage",
+  "phantom", "dnstt", "cursor",
 ] as const;
 export type V13Command = (typeof V13_COMMANDS)[number];
 
@@ -205,6 +209,14 @@ export function omniMainMenuKeyboard(): TelegramInlineKeyboard {
       [
         { text: "🩺 سلامت نودها", callback_data: "v13:health" },
         { text: "📈 مصرف", callback_data: "v13:usage" },
+      ],
+      [
+        { text: "👻 PHANTOM 20تایی", callback_data: "v13:phantom" },
+        { text: "🛡️ 10تایی ساده", callback_data: "v13:phantom-simple" },
+      ],
+      [
+        { text: "🌪️ تونل DNS (dnstt)", callback_data: "v13:dnstt" },
+        { text: "💻 Cursor/VSCode", callback_data: "v13:cursor" },
       ],
     ],
   };
@@ -893,6 +905,26 @@ function renderClientHintView(): RenderedView {
 }
 
 /**
+ * Honest replacement for the legacy `omni_cursor_export` button, which printed
+ * a fabricated base URL and key. Real per-user exports land when the public AI
+ * gateway ships; until then the live donation-pool state is shown.
+ */
+async function renderCursorView(env: Env): Promise<RenderedView> {
+  const stats = await donationPoolStats(env);
+  const text = [
+    "💻 <b>Cursor / VSCode</b>",
+    "",
+    "⚠️ دکمهٔ قدیمی یک Base و کلید ثابت ساختگی (<code>sk-omni</code>) چاپ می‌کرد که هرگز کار نمی‌کرد؛ V13 کلید جعلی تحویل نمی‌دهد.",
+    "",
+    `کلیدهای اهدایی: ${stats.approved} تأییدشده · ${stats.pending} در انتظار بازبینی`,
+    "",
+    "تا راه‌اندازی گیت‌وی عمومی AI، کلیدهای اهدایی استفاده نمی‌شوند؛ به‌محض فعال شدن، Base و توکن موقت اختصاصی خودت را همین‌جا می‌گیری.",
+    "🎁 اهدای کلید: /donate",
+  ].join("\n");
+  return { text, keyboard: omniBackMenuKeyboard(), html: true };
+}
+
+/**
  * Routes the `v13:` panel-section callbacks ported from the OMNI worker.
  * Returns false when the callback belongs to another section.
  */
@@ -1167,6 +1199,31 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     return true;
   }
 
+  // --- Restored legacy panel sections (PHANTOM / dnstt / Cursor) ---
+  if (data === "v13:phantom" || data === "v13:phantom-simple") {
+    const flow: PanelFlow = {
+      flow: "phantom",
+      step: FLOW_STEP_PHANTOM_DOMAIN,
+      data: { mode: data === "v13:phantom-simple" ? "simple" : "full" },
+    };
+    await savePanelFlow(env, telegramUserId, flow);
+    await answerCallback(env, queryId, data === "v13:phantom-simple" ? "10تایی ساده" : "PHANTOM 20تایی");
+    await edit({ text: flowPrompt(flow), keyboard: panelFlowKeyboard(), html: true });
+    return true;
+  }
+  if (data === "v13:dnstt") {
+    const flow: PanelFlow = { flow: "dnstt", step: FLOW_STEP_DNSTT_VPS, data: {} };
+    await savePanelFlow(env, telegramUserId, flow);
+    await answerCallback(env, queryId, "تونل DNS (dnstt)");
+    await edit({ text: renderDnsttIntroText(), keyboard: panelFlowKeyboard(), html: true });
+    return true;
+  }
+  if (data === "v13:cursor") {
+    await answerCallback(env, queryId, "Cursor/VSCode");
+    await edit(await renderCursorView(env));
+    return true;
+  }
+
   // --- Health / usage / engine ---
   if (data === "v13:health" || data === "v13:usage" || data === "v13:roster" || data === "v13:engine") {
     if (data === "v13:engine") {
@@ -1281,6 +1338,19 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
         return sendRendered(message.chat.id, await renderHealthView(env, tenant.id, telegramUserId));
       case "usage":
         return sendRendered(message.chat.id, await renderUsageView(env, tenant.id, telegramUserId));
+      case "phantom": {
+        const mode = (parsed.args[0] ?? "").toLowerCase() === "simple" ? "simple" : "full";
+        const flow: PanelFlow = { flow: "phantom", step: FLOW_STEP_PHANTOM_DOMAIN, data: { mode } };
+        await savePanelFlow(env, telegramUserId, flow);
+        return webhookSend(message.chat.id, flowPrompt(flow), panelFlowKeyboard(), true);
+      }
+      case "dnstt": {
+        const flow: PanelFlow = { flow: "dnstt", step: FLOW_STEP_DNSTT_VPS, data: {} };
+        await savePanelFlow(env, telegramUserId, flow);
+        return webhookSend(message.chat.id, renderDnsttIntroText(), panelFlowKeyboard(), true);
+      }
+      case "cursor":
+        return sendRendered(message.chat.id, await renderCursorView(env));
       default: {
         if (await forwardToOmni(env, update)) return json({ ok: true });
         return webhookSend(message.chat.id, omniUnknownCommandText(), omniMainMenuKeyboard());
