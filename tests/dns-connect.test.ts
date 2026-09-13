@@ -89,6 +89,12 @@ describe("DNS center standalone Cloudflare connect form", () => {
     expect(response.status).toBe(200);
     expect(body).toContain("مرکز DNS — اتصال Cloudflare");
     expect(body).toContain("dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=");
+    // Cloudflare's template format silently drops unknown keys: the DNS-edit
+    // permission key must be "dns" (not "dns_records") or tokens lack DNS Edit.
+    const encoded = body.match(/permissionGroupKeys=([^"&]+)/u)?.[1] ?? "";
+    const decoded = decodeURIComponent(encoded);
+    expect(decoded).toContain('"key":"dns"');
+    expect(decoded).not.toContain("dns_records");
     expect(body).toContain('action="/connect"');
     expect(body).not.toContain("/app");
   });

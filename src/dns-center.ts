@@ -307,9 +307,12 @@ export async function rangeRoundSummary(env: Env, rangeId: string): Promise<Rang
 /** Cron entry: probe due ranges chunk-by-chunk; a full pass repeats every 30 minutes. */
 export async function scanDueRanges(env: Env): Promise<number> {
   const cutoff = new Date(Date.now() - DNS_SCAN_INTERVAL_MINUTES * 60_000).toISOString();
+  // Live (in-chat) ranges are owned by the self-chaining tick loop; probing them
+  // here too double-counted results and never updated the live message.
   const due = await env.DB.prepare(
     `SELECT id, cidr, ips_total, cursor FROM dns_scan_ranges
-     WHERE finished_at IS NULL OR last_scan_at IS NULL OR last_scan_at < ?
+     WHERE live_message_id IS NULL
+       AND (finished_at IS NULL OR last_scan_at IS NULL OR last_scan_at < ?)
      ORDER BY created_at ASC LIMIT ${DNS_SCAN_MAX_RANGES_PER_TICK}`,
   )
     .bind(cutoff)
@@ -345,6 +348,25 @@ export async function scanDueRanges(env: Env): Promise<number> {
   }
   if (probed > 0) console.log("dns_scan_probed", { count: probed });
   return probed;
+}
+
+/**
+ * Live ranges whose in-chat tick chain went quiet (self-fetch blocked, worker
+ * killed, …). Cron resumes them so the progress card always moves.
+ */
+export async function stalledLiveScanRangeIds(env: Env, staleMs = 120_000, limit = 3): Promise<string[]> {
+  const stale = new Date(Date.now() - staleMs).toISOString();
+  const rows = await env.DB.prepare(
+    `SELECT id FROM dns_scan_ranges
+     WHERE live_message_id IS NOT NULL
+       AND finished_at IS NULL
+       AND cursor < ips_total
+       AND COALESCE(last_scan_at, created_at) < ?
+     ORDER BY created_at ASC LIMIT ?`,
+  )
+    .bind(stale, limit)
+    .all<{ id: string }>();
+  return rows.results.map((row) => row.id);
 }
 
 export interface HealthyResolver {

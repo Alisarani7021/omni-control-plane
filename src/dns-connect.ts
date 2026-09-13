@@ -49,9 +49,12 @@ async function consumeLoginLink(env: Env, token: string): Promise<boolean> {
  * picks one zone, presses Create and copies the token.
  */
 export function cloudflareTokenTemplateUrl(): string {
+  // NOTE: the zone permission key for DNS records is "dns" in Cloudflare's
+  // template-URL format (not "dns_records"); an unknown key is dropped
+  // silently and the created token then lacks DNS Edit everywhere.
   const permissions = [
     { key: "zone", type: "read" },
-    { key: "dns_records", type: "edit" },
+    { key: "dns", type: "edit" },
     { key: "workers_scripts", type: "edit" },
     { key: "workers_kv_storage", type: "edit" },
     { key: "d1", type: "edit" },

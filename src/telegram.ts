@@ -64,7 +64,7 @@ import {
 } from "./dns-center";
 import { poisonLine, poisonSummary } from "./dns-poison";
 import { slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
-import { issueConnectLink } from "./dns-connect";
+import { cloudflareTokenTemplateUrl, issueConnectLink } from "./dns-connect";
 import { latestRirSnapshot, rirCardLine } from "./geoip-ir";
 import { renderDnsttIntroText } from "./dnstt";
 import { upsertDnsRecord } from "./cloudflare-api";
@@ -641,6 +641,22 @@ function renderPanelDeployView(row: PanelDeploymentRow): RenderedView {
   return { text: panelDeployText(row, findPanel(row.panel_key)), keyboard: { inline_keyboard: rows }, html: true };
 }
 
+/**
+ * Keyboard for the panel's own token step: one click opens Cloudflare's token
+ * page with every permission the panel deploy needs already selected (BPB,
+ * nahan, zeus, … all share the same scoped set); the user only copies the
+ * token back into the chat.
+ */
+function panelTokenKeyboard(): TelegramInlineKeyboard {
+  const cancel = cancelKeyboard().inline_keyboard[0];
+  return {
+    inline_keyboard: [
+      [{ text: "☁️ ساخت Token آمادهٔ پنل در Cloudflare", url: cloudflareTokenTemplateUrl() }],
+      ...(cancel ? [cancel] : []),
+    ],
+  };
+}
+
 async function handlePanelDeployText(
   env: Env,
   chatId: number,
@@ -674,7 +690,7 @@ async function handlePanelDeployText(
       );
     } catch (error) {
       if (error instanceof HttpError) {
-        return webhookSend(chatId, `⚠️ ${error.message}\n\nتوکن را دوباره بفرستید.`, panelFlowKeyboard(), true);
+        return webhookSend(chatId, `⚠️ ${error.message}\n\nتوکن را دوباره بفرستید.`, panelTokenKeyboard(), true);
       }
       throw error;
     }
@@ -1164,7 +1180,7 @@ async function scanTickSecret(env: Env): Promise<string> {
   return sha256(`${env.TELEGRAM_WEBHOOK_SECRET}:scan-tick`);
 }
 
-async function scanTickFetch(env: Env, rangeId: string): Promise<void> {
+async function scanTickFetch(env: Env, rangeId: string): Promise<boolean> {
   try {
     const secret = await scanTickSecret(env);
     const response = await fetch(`${new URL(env.PUBLIC_BASE_URL).origin}/internal/scan-tick`, {
@@ -1172,10 +1188,27 @@ async function scanTickFetch(env: Env, rangeId: string): Promise<void> {
       headers: { "Content-Type": "application/json", "X-Scan-Tick": secret },
       body: JSON.stringify({ rangeId }),
     });
-    if (!response.ok) console.error("scan_tick_chain_failed", { status: response.status });
+    if (!response.ok) {
+      console.error("scan_tick_chain_failed", { status: response.status });
+      return false;
+    }
+    return true;
   } catch (error) {
     console.error("scan_tick_chain_failed", { message: error instanceof Error ? error.message : String(error) });
+    return false;
   }
+}
+
+/**
+ * Arms the next live-scan tick through the worker's own /internal/scan-tick.
+ * If that self-fetch is blocked (zone challenge, WAF, killed request) the tick
+ * runs directly inside this waitUntil chain instead, so the live card keeps
+ * moving either way; the 5-minute cron is an additional backstop.
+ */
+async function chainNextTick(env: Env, ctx: ExecutionContext, rangeId: string): Promise<void> {
+  if (await scanTickFetch(env, rangeId)) return;
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  await advanceLiveScan(env, ctx, rangeId);
 }
 
 /**
@@ -1207,7 +1240,7 @@ export async function advanceLiveScan(env: Env, ctx: ExecutionContext | null, ra
     const tick = await runScanTick(env, rangeId, 8_000, onProgress);
     if (!tick.done) {
       if (ctx) {
-        ctx.waitUntil(scanTickFetch(env, rangeId));
+        ctx.waitUntil(chainNextTick(env, ctx, rangeId));
         return;
       }
       await advanceLiveScan(env, null, rangeId);
@@ -2309,7 +2342,7 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env, ctx?: Execu
             .bind(String(message.chat.id), progressId ?? null, parsed.rangeId)
             .run();
           if (ctx) {
-            ctx.waitUntil(scanTickFetch(env, parsed.rangeId));
+            ctx.waitUntil(chainNextTick(env, ctx, parsed.rangeId));
             return json({ ok: true });
           }
           await advanceLiveScan(env, null, parsed.rangeId);
@@ -2621,7 +2654,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
           await answerCallback(env, query.id, "توکن پنل را بفرستید");
           await editView(env, chatId, messageId, {
             text: flowPrompt(tokenFlow),
-            keyboard: panelFlowKeyboard(),
+            keyboard: panelTokenKeyboard(),
             html: true,
           });
           return json({ ok: true });

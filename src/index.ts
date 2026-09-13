@@ -20,7 +20,7 @@ import {
 } from "./domestic-race";
 import { buildRuleSet, currentIrRanges, purgeOldRirSnapshots, refreshGeoipIr } from "./geoip-ir";
 import { purgeExpiredEdgeProbes, runEdgeProbes } from "./net-mode";
-import { purgeOldDnsScans, scanDueRanges } from "./dns-center";
+import { purgeOldDnsScans, scanDueRanges, stalledLiveScanRangeIds } from "./dns-center";
 import { enableDnsTunnel } from "./dns-tunnel";
 import { queueSleeperCommand, publishSleeperBeacon, setDeploymentRole } from "./sleeper";
 import type { SleeperCommand } from "./sleeper";
@@ -50,7 +50,7 @@ import {
 } from "./deployments";
 import { createTemporaryApiTokenConnection } from "./api-token";
 import { dnsConnectGet, dnsConnectPost } from "./dns-connect";
-import { handleScanTick } from "./telegram";
+import { advanceLiveScan, handleScanTick } from "./telegram";
 import { HttpError, json, methodNotAllowed, readJson, requireSameOrigin } from "./http";
 import {
   disconnectCloudflareConnection,
@@ -326,7 +326,7 @@ export default {
       return json({ error: { code: "internal_error", message: "Internal server error" } }, 500);
     }
   },
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  async scheduled(_controller: ScheduledController, env: Env, ctx?: ExecutionContext): Promise<void> {
     // One failing stage must never kill the rest of the tick: a missing table
     // or a blocked fetch used to abort the handler before the DNS scan ran.
     const stage = async (name: string, run: () => Promise<unknown>): Promise<void> => {
@@ -371,6 +371,17 @@ export default {
       if (scanned > 0) console.log("dns_center_scanned", { count: scanned });
       const dnsPurged = await purgeOldDnsScans(env);
       if (dnsPurged > 0) console.log("dns_scans_purged", { count: dnsPurged });
+    });
+    // Backstop for the in-chat live scan: if the self-fetch tick chain died
+    // (blocked request, killed worker), cron gives the range its next tick and
+    // the chain re-arms from there.
+    await stage("live_scans", async () => {
+      const stalled = await stalledLiveScanRangeIds(env);
+      for (const rangeId of stalled) {
+        if (ctx) ctx.waitUntil(advanceLiveScan(env, ctx, rangeId));
+        else await advanceLiveScan(env, null, rangeId);
+      }
+      if (stalled.length > 0) console.log("live_scans_resumed", { count: stalled.length });
     });
     await stage("rir_prune", async () => {
       const pruned = await purgeOldRirSnapshots(env);
