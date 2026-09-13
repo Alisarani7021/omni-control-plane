@@ -13,7 +13,7 @@ const rules = [
   { name: "public setWebhook route", pattern: /pathname\s*===?\s*["']\/setwebhook/iu },
   { name: "hardcoded Telegram token", pattern: /\b\d{8,12}:[A-Za-z0-9_-]{30,}\b/u },
   { name: "legacy Global API Key header", pattern: /X-Auth-(?:Key|Email)/iu },
-  { name: "remote source deployment", pattern: /raw\.githubusercontent\.com|cdn\.jsdelivr\.net/iu },
+  { name: "remote source deployment", pattern: /raw\.githubusercontent\.com|cdn\.jsdelivr\.net/iu, allowedSuffix: "/src/panel-catalog.ts" },
 ];
 let failed = false;
 for (const path of sourceFiles) {

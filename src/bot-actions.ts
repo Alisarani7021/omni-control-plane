@@ -1,6 +1,7 @@
 import { getConnection } from "./cloudflare-api";
 import {
   createDeployment,
+  deleteDeployment,
   getDeployment,
   listDeployments,
   retryDeployment,
@@ -128,6 +129,14 @@ export async function botRevokeDeployment(
   deploymentId: string,
 ): Promise<{ ok: boolean; status: string; workflowInstanceId?: string }> {
   return readResponse(await revokeDeployment(internalJsonRequest({}), env, principal, deploymentId));
+}
+
+export async function botDeleteDeployment(
+  env: Env,
+  principal: SessionPrincipal,
+  deploymentId: string,
+): Promise<{ ok: boolean; deleted: string }> {
+  return readResponse(await deleteDeployment(env, principal, deploymentId));
 }
 
 export async function botRotateBootstrap(

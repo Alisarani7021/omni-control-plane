@@ -7,6 +7,7 @@ import {
   formatDeploymentStatus,
   handleTelegramWebhook,
   isV13TelegramUpdate,
+  omniEnvMenuKeyboard,
   omniMainMenuKeyboard,
   parseBotCommand,
 } from "../src/telegram";
@@ -389,14 +390,167 @@ describe("omni telegram webhook", () => {
 });
 
 describe("ported panel sections in the bot", () => {
-  it("adds the ported sections to the main menu", () => {
-    const callbacks = omniMainMenuKeyboard().inline_keyboard.flat().map((button) => button.callback_data);
-    expect(callbacks).toContain("v13:ip");
-    expect(callbacks).toContain("v13:map");
-    expect(callbacks).toContain("v13:wh");
-    expect(callbacks).toContain("v13:donate");
-    expect(callbacks).toContain("v13:health");
-    expect(callbacks).toContain("v13:usage");
+  it("keeps the open sections on the home menu and the management rows in the environment", () => {
+    const home = omniMainMenuKeyboard().inline_keyboard.flat().map((button) => button.callback_data);
+    expect(home).toContain("v13:login");
+    expect(home).toContain("v13:ip");
+    expect(home).toContain("v13:map");
+    expect(home).toContain("v13:wh");
+    expect(home).toContain("v13:donate");
+    expect(home).toContain("v13:help");
+    expect(home).toContain("v13:check");
+    expect(home).not.toContain("v13:health");
+    // The panel deploy tools sit on the open menu now, right after the environment entry.
+    for (const callback of ["v13:deps", "v13:dep:new", "v13:conns", "v13:pack"] as const) {
+      expect(home).toContain(callback);
+    }
+    expect(home.slice(0, 5)).toEqual(["v13:login", "v13:deps", "v13:dep:new", "v13:conns", "v13:pack"]);
+    expect(home).not.toContain("v13:usage");
+    const environment = omniEnvMenuKeyboard().inline_keyboard.flat().map((button) => button.callback_data);
+    for (const callback of [
+      "v13:status", "v13:health", "v13:usage", "omni:home",
+    ]) {
+      expect(environment).toContain(callback);
+    }
+    // Help and the radar health check document public behaviour: they stay copyable.
+    expect(environment).not.toContain("v13:help");
+    expect(environment).not.toContain("v13:ip");
+  });
+
+  it("protects the private environment and leaves the open sections copyable", async () => {
+    const { env } = createEnv();
+    const payload = async (text: string, updateId: number) =>
+      (await (await handleTelegramWebhook(webhookRequest(privateMessage(text, updateId)), env)).json()) as Record<string, unknown>;
+    expect(await payload("/start", 3001)).not.toHaveProperty("protect_content");
+    expect(await payload("/cleanip", 3002)).not.toHaveProperty("protect_content");
+    expect(await payload("/map", 3003)).not.toHaveProperty("protect_content");
+    expect(await payload("/donate", 3004)).not.toHaveProperty("protect_content");
+    expect(await payload("/health", 3005)).toMatchObject({ protect_content: true });
+    expect(await payload("/usage", 3006)).toMatchObject({ protect_content: true });
+    expect(await payload("/status", 3007)).toMatchObject({ protect_content: true });
+    expect(await payload("/help", 3008)).not.toHaveProperty("protect_content");
+  });
+
+  it("serves the help index and each topic as its own copyable message", async () => {
+    const { env } = createEnv();
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ method: url.split("/").pop() ?? "", body: JSON.parse(String(init.body)) as Record<string, unknown> });
+      return Response.json({ ok: true, result: true });
+    }));
+
+    await handleTelegramWebhook(webhookRequest(callbackQuery("v13:help")), env);
+    const index = calls.find((call) => call.method === "sendMessage");
+    expect(index?.body?.parse_mode).toBe("HTML");
+    expect(index?.body).not.toHaveProperty("protect_content");
+    expect(String(index?.body?.text)).toContain("💎 رادار IP تمیز");
+
+    calls.length = 0;
+    await handleTelegramWebhook(webhookRequest(callbackQuery("v13:help:radar", 2002)), env);
+    const topic = calls.find((call) => call.method === "sendMessage");
+    expect(String(topic?.body?.text)).toContain("رادار IP تمیز");
+    expect(String(topic?.body?.text)).toContain("۷ روز");
+    const markup = topic?.body?.reply_markup as { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    expect(markup.inline_keyboard.flat().map((button) => button.callback_data)).toEqual(["v13:help", "omni:home"]);
+
+    calls.length = 0;
+    await handleTelegramWebhook(webhookRequest(callbackQuery("v13:help:i-do-not-exist", 2003)), env);
+    const alert = calls.find((call) => call.method === "answerCallbackQuery");
+    expect(alert?.body).toMatchObject({ show_alert: true });
+    expect(calls.some((call) => call.method === "sendMessage")).toBe(false);
+  });
+
+  it("opens the radar health check with real counts only", async () => {
+    const { env } = createEnv();
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ method: url.split("/").pop() ?? "", body: JSON.parse(String(init.body)) as Record<string, unknown> });
+      return Response.json({ ok: true, result: true });
+    }));
+    const response = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:check:mci:tehran")), env);
+    expect(await response.json()).toEqual({ ok: true });
+
+    const edit = calls.find((call) => call.method === "editMessageText");
+    const text = String(edit?.body?.text);
+    expect(text).toContain("🔍 <b>هلث چک");
+    expect(text).toMatch(/🧮 0 از \d+ آی‌پی گزارش زندهٔ کلاینت دارد/u);
+    expect(text).not.toMatch(/undefined|null/u);
+    // The old worker advertised RUM probes from this screen; we only count client reports.
+    expect(text).not.toMatch(/RUM-based|غول فعال/u);
+    const markup = edit?.body?.reply_markup as { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    const callbacks = markup.inline_keyboard.flat().map((button) => button.callback_data);
+    expect(callbacks).toContain("v13:check:mci:tehran");
+    expect(callbacks).toContain("v13:ip:report:mci:tehran");
+    expect(callbacks).toContain("omni:home");
+  });
+
+  it("starts the phantom pack flow and keeps the generated links out of storage", async () => {
+    const { env, statements, executed } = createEnv();
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, result: true })));
+    await handleTelegramWebhook(webhookRequest(callbackQuery("v13:pack")), env);
+    const insert = executed.find((item) => item.sql.includes("INSERT INTO telegram_flows"));
+    expect(insert?.sql).toContain("telegram_flows");
+    expect((insert?.params ?? []).slice(1, 3)).toEqual(["pack", "pack:domain"]);
+    expect(statements.some((sql) => sql.includes("INSERT INTO clean_ip_reports"))).toBe(false);
+
+    const withDomain = createEnv({
+      flowRow: { flow: "pack", step: "pack:domain", state_json: "{}", expires_at: "2099-01-01T00:00:00.000Z" },
+    });
+    const domainAnswer = await withDomain.env === undefined
+      ? null
+      : await handleTelegramWebhook(webhookRequest(privateMessage("https://Example.com/x", 4002)), withDomain.env);
+    expect(String((await domainAnswer?.json() as Record<string, unknown>)?.text)).toContain("قدم ۲ از ۲");
+
+    const withUuid = createEnv({
+      flowRow: {
+        flow: "pack", step: "pack:uuid", state_json: JSON.stringify({ domain: "example.com" }),
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    const uuidCalls: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      uuidCalls.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Response.json({ ok: true, result: { message_id: 3 } });
+    }));
+    const pack = await handleTelegramWebhook(webhookRequest(privateMessage("new", 4003)), withUuid.env);
+    expect(await pack.json()).toEqual({ ok: true });
+    const text = String(uuidCalls[0]?.text);
+    expect(text).toContain("/api/v1/pack?domain=example.com");
+    expect(text).toContain("format=clash");
+    expect(text).toContain("format=singbox");
+    expect(text).toContain("این فقط کانفیگ است، نه تست");
+    expect(uuidCalls[0]).not.toHaveProperty("protect_content");
+  });
+
+  it("offers 🗑 only on records that are safe to drop and asks twice", async () => {
+    const { env } = createEnv({
+      deployments: [
+        { id: "11111111-1111-4111-8111-111111111111", worker_name: "v13-broken", status: "failed", node_hostname: "b.example.com", updated_at: "2026-09-10T00:00:00.000Z" },
+        { id: "22222222-2222-4222-8222-222222222222", worker_name: "v13-live", status: "ready", node_hostname: "l.example.com", updated_at: "2026-09-10T00:00:00.000Z" },
+      ],
+    });
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      calls.push({ method: url.split("/").pop() ?? "", body: JSON.parse(String(init.body)) as Record<string, unknown> });
+      return Response.json({ ok: true, result: true });
+    }));
+    await handleTelegramWebhook(webhookRequest(callbackQuery("v13:deps")), env);
+    const list = calls.find((call) => call.method === "editMessageText");
+    const markup = list?.body?.reply_markup as { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    const callbacks = markup.inline_keyboard.flat().map((button) => button.callback_data);
+    expect(callbacks).toContain("v13:dep-del:11111111-1111-4111-8111-111111111111");
+    expect(callbacks.some((data) => data?.startsWith("v13:dep-del:22222222"))).toBe(false);
+    expect(String(list?.body?.text)).toContain("🟢");
+    expect(String(list?.body?.text)).toContain("📁 دیپلوی‌ها — 2");
+    expect(callbacks).toContain("v13:dep:new");
+
+    calls.length = 0;
+    await handleTelegramWebhook(webhookRequest(callbackQuery("v13:dep-del:11111111-1111-4111-8111-111111111111", 2010)), env);
+    const confirm = calls.find((call) => call.method === "editMessageText");
+    expect(String(confirm?.body?.text)).toContain("قابل بازگشت نیست");
+    const confirmMarkup = confirm?.body?.reply_markup as { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    expect(confirmMarkup.inline_keyboard.flat().map((button) => button.callback_data))
+      .toContain("v13:dep-del-yes:11111111-1111-4111-8111-111111111111");
   });
 
   it("treats the new plain-text menu labels as V13 updates", () => {
@@ -612,5 +766,43 @@ describe("ported panel sections in the bot", () => {
     await handleTelegramWebhook(webhookRequest(callbackQuery("v13:wh:publish")), env);
     const edit = calls.find((call) => call.method === "sendMessage" || call.method === "editMessageText");
     expect(String(edit?.body?.text)).toContain("اتصال Cloudflare");
+  });
+});
+
+describe("V13.5 dedicated net-intel keys", () => {
+  it("gives every new capability its own key on the main menu", () => {
+    const callbacks = omniMainMenuKeyboard()
+      .inline_keyboard.flat()
+      .map((button) => button.callback_data);
+    for (const callback of ["v13:netmode", "v13:dnstest", "v13:rir", "v13:tun", "v13:race", "v13:slp"]) {
+      expect(callbacks).toContain(callback);
+    }
+  });
+
+  it("keeps the old map keyboard free of the new keys", async () => {
+    const { env } = createEnv();
+    const response = await handleTelegramWebhook(webhookRequest(privateMessage("/map")), env);
+    const payload = (await response.json()) as {
+      reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    };
+    const callbacks = payload.reply_markup.inline_keyboard.flat().map((button) => button.callback_data);
+    expect(callbacks).not.toContain("v13:dnstest");
+    expect(callbacks).not.toContain("v13:tun");
+    expect(callbacks).toContain("v13:map");
+  });
+
+  it("renders the standalone network-state card honestly without data", async () => {
+    const { env } = createEnv();
+    const update: TelegramUpdate = {
+      update_id: 4101,
+      callback_query: {
+        id: "cq-netmode",
+        data: "v13:netmode",
+        from: { id: 555, is_bot: false, first_name: "Ali" },
+        message: { message_id: 42, chat: { id: 555, type: "private" } },
+      },
+    };
+    const result = await handleTelegramWebhook(webhookRequest(update), env);
+    expect(result.status).toBe(200);
   });
 });

@@ -1,6 +1,7 @@
 import {
   botConnectionBoundary,
   botCreateDeployment,
+  botDeleteDeployment,
   botDisconnectConnection,
   botGetDeployment,
   botListConnections,
@@ -14,6 +15,22 @@ import {
   type BotConnectionSummary,
   type BotDeploymentSummary,
 } from "./bot-actions";
+import {
+  findPanel,
+  panelCatalogKeyboard,
+  panelCatalogText,
+  panelPromptFor,
+  parsePanelPick,
+  sanitizePanelPassword,
+  sanitizeWorkerName,
+} from "./panel-catalog";
+import {
+  deletePanelDeployment,
+  deployPanel,
+  listPanelDeployments,
+  panelDeployText,
+  type PanelDeploymentRow,
+} from "./panel-deploy";
 import { applySniDefault, applyUfwChoice, beginDeployWizard, cancelKeyboard, clearWizard, loadWizard, processWizardText } from "./telegram-wizard";
 import { audit, rateLimit } from "./db";
 import { HttpError, json, readJson } from "./http";
@@ -24,16 +41,18 @@ import {
   cleanIpResolversText,
   CLEAN_IP_CITIES,
   CLEAN_IP_OPERATORS,
+  CLEAN_IP_STATUS_LABELS,
   findCity,
   findOperator,
   rankCleanIps,
   type CleanIpRow,
 } from "./clean-ip";
 import { aggregateMap, mapText, MAP_ISPS, MAP_TRANSPORT_LABELS, MAP_TRANSPORTS } from "./censorship-map";
-import { listRaceWinners, raceLine } from "./domestic-race";
+import { directRaceDomains, listRaceWinners, raceLine } from "./domestic-race";
 import { poisonLine, poisonSummary, mtuSuggestion } from "./dns-poison";
 import { dnsTunnelCard, enableDnsTunnel } from "./dns-tunnel";
-import { latestRirSnapshot, rirCardLine } from "./geoip-ir";
+import { latestRirSnapshot, rirCardLine, RIR_IR_URL } from "./geoip-ir";
+import { NET_MODE_LABELS, netModeForDeployment } from "./net-mode";
 import {
   beaconRecordName,
   pendingSleeperCommand,
@@ -63,13 +82,23 @@ import {
   FLOW_STEP_MAP_RTT,
   FLOW_STEP_MAP_TRANSPORT,
   FLOW_STEP_MAP_VERDICT,
+  FLOW_STEP_PACK_DOMAIN,
   FLOW_STEP_RUM_PING,
+  FLOW_STEP_PANEL_NAME,
+  FLOW_STEP_PANEL_PASS,
   loadPanelFlow,
   panelFlowKeyboard,
   processPanelFlowText,
   savePanelFlow,
   type PanelFlow,
 } from "./panel-flows";
+import {
+  findHelpTopic,
+  helpIndexKeyboard,
+  helpIndexText,
+  helpTopicKeyboard,
+  helpTopicText,
+} from "./help-topics";
 import {
   engineStatus,
   engineStatusText,
@@ -129,6 +158,7 @@ export const OMNI_MENU_TEXT_WHITEHOLE = "🌪️ WhiteHole";
 export const OMNI_MENU_TEXT_DONATE = "🎁 اهدای AI";
 export const OMNI_MENU_TEXT_HEALTH = "🩺 سلامت نودها";
 export const OMNI_MENU_TEXT_USAGE = "📈 مصرف";
+export const OMNI_MENU_TEXT_CHECK = "🔍 هلث چک";
 export const OMNI_MENU_TEXTS: ReadonlySet<string> = new Set([
   OMNI_MENU_TEXT_SATELLITE,
   OMNI_MENU_TEXT_DEPS,
@@ -142,6 +172,7 @@ export const OMNI_MENU_TEXTS: ReadonlySet<string> = new Set([
   OMNI_MENU_TEXT_DONATE,
   OMNI_MENU_TEXT_HEALTH,
   OMNI_MENU_TEXT_USAGE,
+  OMNI_MENU_TEXT_CHECK,
 ]);
 
 const STATUS_FA: Record<string, string> = {
@@ -197,33 +228,98 @@ export function isV13TelegramUpdate(update: TelegramUpdate, botUsername: string)
  * Main Omni menu. The private-environment entry stays as its own separate
  * section; full worker management lives in the sections below it.
  */
+const MENU_ROWS: TelegramInlineKeyboard["inline_keyboard"] = [
+  [{ text: "🛰️ ورود به محیط اختصاصی V13", callback_data: "v13:login" }],
+  [
+    { text: "💎 آی‌پی تمیز", callback_data: "v13:ip" },
+    { text: "🗺 نت ملی", callback_data: "v13:map" },
+  ],
+  [
+    { text: "🌪️ WhiteHole", callback_data: "v13:wh" },
+    { text: "🎁 اهدای AI", callback_data: "v13:donate" },
+  ],
+  [
+    { text: "🔍 هلث چک", callback_data: "v13:check" },
+    { text: "❓ راهنما", callback_data: "v13:help" },
+  ],
+  [
+    { text: "📁 دیپلوی‌های من", callback_data: "v13:deps" },
+    { text: "🚀 دیپلوی پنل جدید", callback_data: "v13:dep:new" },
+  ],
+  [
+    { text: "🔌 اتصال Cloudflare", callback_data: "v13:conns" },
+    { text: "👻 PHANTOM ۲۰تایی", callback_data: "v13:pack" },
+  ],
+  [
+    { text: "📊 وضعیت", callback_data: "v13:status" },
+    { text: "🩺 سلامت نودها", callback_data: "v13:health" },
+  ],
+  [
+    { text: "📈 مصرف و دارایی‌ها", callback_data: "v13:usage" },
+  ],
+  // V13.5 net-intel: every capability gets its OWN dedicated key, never mixed
+  // into the older keyboards. Appended as a separate block at the bottom.
+  [{ text: "🧭 وضعیت شبکه", callback_data: "v13:netmode" }],
+  [{ text: "🧪 تست مسمومیت DNS", callback_data: "v13:dnstest" }],
+  [{ text: "🇮🇷 رنج‌های ملی", callback_data: "v13:rir" }],
+  [{ text: "🛰️ تونل DNS", callback_data: "v13:tun" }],
+  [{ text: "🏘️ مستقیم ملی", callback_data: "v13:race" }],
+  [{ text: "😴 خواب‌نت", callback_data: "v13:slp" }],
+];
+
+/* The locked private environment keeps only the tenant-wide management rows. */
+const ENV_CALLBACKS = new Set(["v13:status", "v13:health", "v13:usage", "v13:roster", "v13:engine"]);
+
+/** Home order: the panel deploy tools sit right under the environment entry, as in the panel worker. */
+const HOME_ORDER = [
+  "v13:login", "v13:deps", "v13:dep:new", "v13:conns", "v13:pack",
+  "v13:ip", "v13:map", "v13:wh", "v13:donate", "v13:check", "v13:help",
+];
+
+function rowRank(row: TelegramInlineKeyboard["inline_keyboard"][number]): number {
+  const ranks = row
+    .map((button) => HOME_ORDER.indexOf(button.callback_data ?? ""))
+    .filter((rank) => rank >= 0);
+  return ranks.length ? Math.min(...ranks) : HOME_ORDER.length;
+}
+
+/** Splits the single row table into the open home menu and the locked environment menu. */
+function menuRows(environment: boolean): TelegramInlineKeyboard["inline_keyboard"] {
+  const rows = MENU_ROWS.map((row) =>
+    row.filter((button) => ENV_CALLBACKS.has(button.callback_data ?? "") === environment),
+  ).filter((row) => row.length > 0);
+  return environment ? rows : [...rows].sort((a, b) => rowRank(a) - rowRank(b));
+}
+
 export function omniMainMenuKeyboard(): TelegramInlineKeyboard {
+  return { inline_keyboard: menuRows(false) };
+}
+
+/**
+ * Management rows, moved inside the 🛰️ environment. Its message is sent with
+ * protect_content and Telegram keeps that flag across edits, so everything
+ * rendered in place there stays copy/screenshot-proof.
+ */
+export function omniEnvMenuKeyboard(): TelegramInlineKeyboard {
   return {
     inline_keyboard: [
-      [{ text: "🛰️ ورود به محیط اختصاصی V13", callback_data: "v13:login" }],
-      [
-        { text: "📦 استقرارها", callback_data: "v13:deps" },
-        { text: "🔌 اتصال Cloudflare", callback_data: "v13:conns" },
-      ],
-      [
-        { text: "📊 وضعیت", callback_data: "v13:status" },
-        { text: "❓ راهنما", callback_data: "v13:help" },
-      ],
-      [
-        { text: "💎 آی‌پی تمیز", callback_data: "v13:ip" },
-        { text: "🗺 نت ملی", callback_data: "v13:map" },
-      ],
-      [
-        { text: "🌪️ WhiteHole", callback_data: "v13:wh" },
-        { text: "🎁 اهدای AI", callback_data: "v13:donate" },
-      ],
-      [
-        { text: "🩺 سلامت نودها", callback_data: "v13:health" },
-        { text: "📈 مصرف", callback_data: "v13:usage" },
-      ],
+      ...menuRows(true),
+      [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
     ],
   };
 }
+
+function loginEnvKeyboard(appUrl: string, webUrl: string): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [
+      ...loginKeyboard(appUrl, webUrl).inline_keyboard,
+      ...omniEnvMenuKeyboard().inline_keyboard,
+    ],
+  };
+}
+
+const ENV_NOTICE =
+  "\n\n🔐 این پیام و همهٔ بخش‌هایش محافظت‌شده‌اند: کپی، فوروارد و اسکرین‌شات قفل است. «🏠 منوی اصلی Omni» به بخش‌های آزاد برمی‌گردد.";
 
 export function omniBackMenuKeyboard(): TelegramInlineKeyboard {
   return {
@@ -324,6 +420,8 @@ export function faErrorMessage(error: unknown): string | null {
         return "این اتصال هنوز توسط یک استقرار فعال لازم است؛ اول آن را تمام یا باطل کنید.";
       case "deployment_not_found":
         return "استقرار پیدا نشد.";
+      case "deployment_not_deletable":
+        return "فقط استقرار ناموفق یا باطل‌شده حذف می‌شود؛ برای نود زنده اول «🛑 ابطال» را بزنید.";
       case "invalid_input":
         return "ورودی معتبر نیست؛ دوباره بررسی کنید.";
       default:
@@ -460,27 +558,182 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
+const RADAR_CHECK_ROWS = 8;
+
+/**
+ * "هلث چک" from the OMNI worker, minus the theatre: the old version claimed RUM
+ * probes it never ran. This counts real client reports for the selected
+ * operator/city inside the 7-day radar window and links the JSON feed.
+ */
+async function renderRadarCheckView(env: Env, operator = "mci", city = "tehran"): Promise<RenderedView> {
+  const ranking = await rankCleanIps(env, { operator, city, limit: RADAR_CHECK_ROWS });
+  const baseUrl = (env.PUBLIC_BASE_URL ?? "").replace(/\/+$/u, "");
+  const lines = [
+    "🔍 <b>هلث چک — زنده بودن رادار</b>",
+    "",
+    `📡 اپراتور: <b>${escapeHtml(ranking.operator.label)}</b> · شهر: <b>${escapeHtml(ranking.city.label)}</b>`,
+    `🧮 ${ranking.measured} از ${ranking.poolSize} آی‌پی گزارش زندهٔ کلاینت دارد`,
+    "",
+  ];
+  if (ranking.rows.length === 0) {
+    lines.push("هنوز گزارشی برای این انتخاب ثبت نشده است.");
+  } else {
+    for (const [index, row] of ranking.rows.entries()) {
+      const latency = row.latencyMs === null ? "—" : `${row.latencyMs}ms`;
+      const loss = row.lossPct === null ? "—" : `${row.lossPct}%`;
+      lines.push(
+        `${index + 1}. <code>${escapeHtml(row.ip)}:${row.port}</code> — ${CLEAN_IP_STATUS_LABELS[row.status]} · ${latency} · loss ${loss} · ${row.reports} گزارش`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    `🌐 <code>${escapeHtml(baseUrl)}/api/v1/clean-ip?format=json</code>`,
+    "ℹ️ این ربات از سرور ابری پینگ نمی‌زند؛ مسیر شما را نمی‌سنجد. «۰ از N» یعنی هنوز کسی تست نکرده، نه اینکه همه بلاک‌اند.",
+  );
+  return {
+    text: lines.join("\n"),
+    keyboard: {
+      inline_keyboard: [
+        [
+          { text: "🔄 تست مجدد", callback_data: `v13:check:${operator}:${city}` },
+          { text: "📤 ثبت گزارش", callback_data: `v13:ip:report:${operator}:${city}` },
+        ],
+        [{ text: "💎 رادار کامل", callback_data: "v13:ip" }],
+        [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+      ],
+    },
+    html: true,
+  };
+}
+
+/** Statuses whose Cloudflare side is already gone, so removing the row is safe. */
+const DELETABLE_STATUSES = ["failed", "revoked"];
+
+/** One outcome card for a panel deploy: link in, home page, pack, and the list. */
+function renderPanelDeployView(row: PanelDeploymentRow): RenderedView {
+  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
+  if (row.status !== "failed") {
+    rows.push([{ text: "🖥️ ورود", url: row.panel_url }]);
+    const root = `https://${row.worker_domain}/`;
+    if (row.panel_url !== root) rows.push([{ text: "🏠 صفحه اصلی", url: root }]);
+    rows.push([
+      { text: "👻 PHANTOM ۲۰تایی", callback_data: "v13:pack" },
+      { text: "📁 دیپلوی‌های من", callback_data: "v13:deps" },
+    ]);
+  } else {
+    rows.push([
+      { text: "🔁 تلاش دوباره", callback_data: "v13:dep:new" },
+      { text: "📁 دیپلوی‌های من", callback_data: "v13:deps" },
+    ]);
+  }
+  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
+  return { text: panelDeployText(row, findPanel(row.panel_key)), keyboard: { inline_keyboard: rows }, html: true };
+}
+
+async function handlePanelDeployText(
+  env: Env,
+  chatId: number,
+  tenantId: string,
+  displayName: string,
+  telegramUserId: string,
+  flow: PanelFlow,
+  text: string,
+): Promise<Response> {
+  const spec = findPanel(flow.data["panel"] ?? "");
+  if (!spec) {
+    await clearPanelFlow(env, telegramUserId);
+    return webhookSend(chatId, "پنل انتخابی پیدا نشد؛ دوباره از منو شروع کنید.", omniMainMenuKeyboard());
+  }
+  if (flow.step === FLOW_STEP_PANEL_NAME) {
+    const workerName = sanitizeWorkerName(text);
+    if (!workerName) {
+      return webhookSend(chatId, "⚠️ حداقل ۳ نویسه و فقط حرف کوچک انگلیسی، عدد و خط‌تیره. دوباره بفرستید.", panelFlowKeyboard());
+    }
+    await savePanelFlow(env, telegramUserId, {
+      flow: "panel",
+      step: FLOW_STEP_PANEL_PASS,
+      data: { ...flow.data, worker: workerName },
+    });
+    return webhookSend(
+      chatId,
+      `نام Worker: <code>${escapeHtml(workerName)}</code> — پنل: ${spec.name}\n\n🔒 حالا رمز پنل را بفرستید (حداقل ۴ نویسه). این رمز ذخیره نمی‌شود.`,
+      panelFlowKeyboard(),
+      true,
+    );
+  }
+  if (flow.step !== FLOW_STEP_PANEL_PASS) {
+    await clearPanelFlow(env, telegramUserId);
+    return webhookSend(chatId, "این قدم باز نیست؛ دوباره از منو شروع کنید.", omniMainMenuKeyboard());
+  }
+  const password = sanitizePanelPassword(text);
+  if (!password) {
+    return webhookSend(chatId, "⚠️ رمز پنل باید حداقل ۴ نویسه باشد. دوباره بفرستید.", panelFlowKeyboard());
+  }
+  await clearPanelFlow(env, telegramUserId);
+  await telegramApi(env, "sendMessage", {
+    chat_id: chatId,
+    text: `⏳ در حال ${spec.name}: ساخت KV/D1، آپلود ورکر و تست لینک…`,
+  });
+  const principal = botPrincipal(tenantId, telegramUserId, displayName);
+  const connectionId = flow.data["connection"] ?? "";
+  try {
+    const row = await deployPanel(env, principal, {
+      panelKey: spec.key,
+      workerName: flow.data["worker"] ?? "",
+      password,
+      ...(connectionId ? { connectionId } : {}),
+    });
+    return sendRendered(chatId, renderPanelDeployView(row));
+  } catch (error) {
+    await clearWizard(env, telegramUserId);
+    return await handleErrorView(env, chatId, tenantId, telegramUserId, error);
+  }
+}
+
 async function renderDepsList(env: Env, tenantId: string, displayName: string, telegramUserId: string): Promise<RenderedView> {
   const principal = botPrincipal(tenantId, telegramUserId, displayName);
   const deployments: BotDeploymentSummary[] = (await botListDeployments(env, principal)).slice(0, 10);
-  if (deployments.length === 0) {
+  const panelRows = await listPanelDeployments(env, tenantId);
+  if (deployments.length === 0 && panelRows.length === 0) {
     return {
-      text: "📦 هنوز استقراری ندارید. با دکمهٔ زیر اولین نود واقعی را بسازید 👇",
+      text: "📁 هنوز استقراری ندارید. با دکمهٔ زیر اولین نود واقعی را بسازید 👇",
       keyboard: {
         inline_keyboard: [
-          [{ text: "➕ ساخت استقرار جدید", callback_data: "v13:dep:new" }],
+          [{ text: "➕ جدید", callback_data: "v13:dep:new" }],
           [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
         ],
       },
       html: false,
     };
   }
-  const rows = deployments.map((deployment) => ([
-    { text: `${deployment.worker_name} — ${faDeploymentStatus(deployment.status)}`.slice(0, 60), callback_data: `v13:dep:${deployment.id}` },
-  ]));
-  rows.push([{ text: "➕ ساخت استقرار جدید", callback_data: "v13:dep:new" }]);
+  // Same shape as the OMNI worker: 🟢 on the live node, ⚪ on the rest, ➕ جدید on top,
+  // plus a per-row 🗑 for the records that are safe to drop.
+  const rows: TelegramInlineKeyboard["inline_keyboard"] = deployments.map((deployment) => {
+    const marker = deployment.status === "ready" ? "🟢" : "⚪";
+    const cells = [
+      { text: `${marker} ${deployment.worker_name} — ${faDeploymentStatus(deployment.status)}`.slice(0, 52), callback_data: `v13:dep:${deployment.id}` },
+    ];
+    if (DELETABLE_STATUSES.includes(deployment.status)) {
+      cells.push({ text: "🗑", callback_data: `v13:dep-del:${deployment.id}` });
+    }
+    return cells;
+  });
+  for (const row of panelRows) {
+    const marker = row.status === "live" ? "🟢" : "⚪";
+    const cells: TelegramInlineKeyboard["inline_keyboard"][number] = [
+      { text: `${marker} ${row.worker_name} — ${row.panel_name}`.slice(0, 52), url: row.panel_url },
+    ];
+    if (row.status === "failed") cells.push({ text: "🗑", callback_data: `v13:pdel:${row.id}` });
+    rows.push(cells);
+  }
+  rows.unshift([{ text: "➕ جدید", callback_data: "v13:dep:new" }]);
   rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
-  return { text: "📦 یک استقرار را انتخاب کنید:", keyboard: { inline_keyboard: rows }, html: false };
+  return {
+    text: `📁 دیپلوی‌ها — ${deployments.length}\n🟢 نود آماده · ⚪ بقیه\n🗑 فقط برای رکورد ناموفق یا باطل‌شده`,
+    keyboard: { inline_keyboard: rows },
+    html: false,
+  };
 }
 
 async function renderDepDetail(
@@ -518,11 +771,8 @@ async function renderDepDetail(
   if (!["revoked", "revoking"].includes(status)) {
     rows.push([{ text: "🛑 ابطال استقرار", callback_data: `v13:dep-revoke:${deployment.id}` }]);
   }
-  if (status === "ready") {
-    rows.push([
-      { text: "🛰️ تونل DNS", callback_data: `v13:tun:${deployment.id}` },
-      { text: "😴 خواب‌نت", callback_data: `v13:slp:${deployment.id}` },
-    ]);
+  if (DELETABLE_STATUSES.includes(status)) {
+    rows.push([{ text: "🗑 حذف رکورد (بدون بازگشت)", callback_data: `v13:dep-del:${deployment.id}` }]);
   }
   rows.push([
     { text: "🔄 تازه‌سازی", callback_data: `v13:dep:${deployment.id}` },
@@ -733,7 +983,6 @@ function mapKeyboard(): TelegramInlineKeyboard {
         { text: "🔄 تازه‌سازی", callback_data: "v13:map" },
         { text: "📤 ثبت گزارش", callback_data: "v13:map:report" },
       ],
-      [{ text: "🧪 تست مسمومیت DNS", callback_data: "v13:dnstest" }],
       ...homeRow(),
     ],
   };
@@ -773,6 +1022,82 @@ function renderDnsTestView(env: Env): RenderedView {
 // ---------------------------------------------------------------------------
 // DNS tunnel + sleeper cards (per deployment).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// V13.5 net-intel standalone views — each feature owns its dedicated key and
+// its own card; nothing is mixed into the pre-V13.5 keyboards.
+// ---------------------------------------------------------------------------
+
+async function renderNetModeView(env: Env, tenantId: string): Promise<RenderedView> {
+  const rows = await env.DB.prepare(
+    "SELECT id, worker_hostname, status FROM deployments WHERE tenant_id = ? ORDER BY created_at DESC",
+  )
+    .bind(tenantId)
+    .all<{ id: string; worker_hostname: string; status: string }>();
+  const lines = ["🧭 <b>وضعیت شبکه</b> — دو چشم مستقل: پروب لبهٔ Worker + گزارش داخلی نود."];
+  if (rows.results.length === 0) {
+    lines.push("هنوز استقرار فعالی ثبت نشده است؛ بدون اندازه‌گیری حدس نمی‌زنیم.");
+  }
+  for (const row of rows.results) {
+    const mode = await netModeForDeployment(env, row.id);
+    lines.push(`• <code>${escapeHtml(row.worker_hostname)}</code> (${escapeHtml(row.status)}) → ${NET_MODE_LABELS[mode]}`);
+  }
+  lines.push("منبع: edge_probes (cron هر ۵ دقیقه) و agent_reports. بدون داده = «بدون داده»، نه حدس.");
+  return { text: lines.join("\n"), keyboard: { inline_keyboard: [...homeRow()] }, html: true };
+}
+
+async function renderRirView(env: Env): Promise<RenderedView> {
+  const snapshot = await latestRirSnapshot(env);
+  const lines = [
+    "🇮🇷 <b>رنج‌های ملی (RIPE/IRNIC)</b>",
+    rirCardLine(snapshot),
+    snapshot
+      ? "diff روزانهٔ delegated-irnic-extended-latest با snapshot پیشین؛ نگهداری ۱۴ روز؛ rule-set عمومی در /api/v1/geoip-ir.json."
+      : "اولین snapshot با cron روزانه گرفته می‌شود؛ تا آن زمان هیچ عددی نمایش داده نمی‌شود.",
+    `منبع: <code>${RIR_IR_URL}</code>`,
+  ];
+  return { text: lines.join("\n"), keyboard: { inline_keyboard: [...homeRow()] }, html: true };
+}
+
+async function renderRaceView(env: Env): Promise<RenderedView> {
+  const [winners, direct] = await Promise.all([listRaceWinners(env), directRaceDomains(env)]);
+  const line = raceLine(winners);
+  const lines = [
+    "🏘️ <b>مستقیم داخل کشور</b> — مسابقهٔ واقعی «مستقیم در برابر تونل» برای هر دامنه.",
+    line ?? "هنوز گزارش مسابقه‌ای ثبت نشده؛ ایجنتِ بوت‌استرپ جدید یک‌بار اندازه‌گیری می‌کند و می‌فرستد.",
+    direct.length > 0
+      ? `برندهٔ قطعی مستقیم (حداقل ۲ نمونه): ${direct.map((domain) => `<code>${escapeHtml(domain)}</code>`).join("، ")}`
+      : "هنوز دامنه‌ای با برد مستقیم قطعی نداریم.",
+    "برنده‌ها در rule-set «race-direct» پروفیل‌های sing-box اعمال می‌شوند؛ مقایسهٔ ms در کارت نقشه هم هست.",
+  ];
+  return { text: lines.join("\n"), keyboard: { inline_keyboard: [...homeRow()] }, html: true };
+}
+
+async function renderPickerView(env: Env, tenantId: string, prefix: "tun" | "slp"): Promise<RenderedView> {
+  const rows = await env.DB.prepare(
+    "SELECT id, worker_hostname, status FROM deployments WHERE tenant_id = ? AND status NOT IN ('revoked', 'revoking') ORDER BY created_at DESC",
+  )
+    .bind(tenantId)
+    .all<{ id: string; worker_hostname: string; status: string }>();
+  const only = rows.results.length === 1 ? rows.results[0] : undefined;
+  if (only) {
+    return prefix === "tun"
+      ? renderTunnelView(env, tenantId, only.id)
+      : renderSleeperView(env, tenantId, only.id);
+  }
+  const title = prefix === "tun" ? "🛰️ تونل DNS — کدام استقرار؟" : "😴 خواب‌نت — کدام استقرار؟";
+  if (rows.results.length === 0) {
+    return {
+      text: `${title}\nهنوز استقرار فعالی ندارید؛ اول از «📁 دیپلوی‌های من» یک استقرار بسازید.`,
+      keyboard: { inline_keyboard: [...homeRow()] },
+      html: false,
+    };
+  }
+  const buttons = rows.results.map((row) => [
+    { text: `${row.worker_hostname} · ${row.status}`, callback_data: `v13:${prefix}:${row.id}` },
+  ]);
+  return { text: title, keyboard: { inline_keyboard: [...buttons, ...homeRow()] }, html: false };
+}
 
 async function ownedDeploymentRow(env: Env, tenantId: string, deploymentId: string): Promise<DeploymentRow | null> {
   return env.DB.prepare("SELECT * FROM deployments WHERE id = ? AND tenant_id = ?")
@@ -1087,6 +1412,25 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     }
   }
 
+  // --- PHANTOM pack (domain + uuid in, config pack out) ---
+  if (data === "v13:pack") {
+    const flow: PanelFlow = { flow: "pack", step: FLOW_STEP_PACK_DOMAIN, data: {} };
+    await savePanelFlow(env, telegramUserId, flow);
+    await answerCallback(env, queryId, "دامنه را بفرستید");
+    await edit({ text: flowPrompt(flow), keyboard: panelFlowKeyboard(), html: true });
+    return true;
+  }
+
+  // --- Radar health check ---
+  if (data === "v13:check" || data.startsWith("v13:check:")) {
+    const selected = data.slice("v13:check".length).split(":").filter((part) => part.length > 0);
+    const operator = selected[0] ?? "mci";
+    const city = selected[1] ?? "tehran";
+    await answerCallback(env, queryId, "هلث چک");
+    await edit(await renderRadarCheckView(env, operator, city));
+    return true;
+  }
+
   // --- Censorship map ---
   if (data === "v13:map") {
     await answerCallback(env, queryId, "نقشهٔ سانسور");
@@ -1300,6 +1644,33 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     return true;
   }
 
+  // --- V13.5 standalone net-intel keys (own card per feature) ---
+  if (data === "v13:netmode") {
+    await answerCallback(env, queryId, "وضعیت شبکه");
+    await edit(await renderNetModeView(env, tenantId));
+    return true;
+  }
+  if (data === "v13:rir") {
+    await answerCallback(env, queryId, "رنج‌های ملی");
+    await edit(await renderRirView(env));
+    return true;
+  }
+  if (data === "v13:race") {
+    await answerCallback(env, queryId, "مستقیم ملی");
+    await edit(await renderRaceView(env));
+    return true;
+  }
+  if (data === "v13:tun") {
+    await answerCallback(env, queryId, "تونل DNS");
+    await edit(await renderPickerView(env, tenantId, "tun"));
+    return true;
+  }
+  if (data === "v13:slp") {
+    await answerCallback(env, queryId, "خواب‌نت");
+    await edit(await renderPickerView(env, tenantId, "slp"));
+    return true;
+  }
+
   // --- DNS poisoning self-test card ---
   if (data === "v13:dnstest") {
     await answerCallback(env, queryId, "تست مسمومیت DNS");
@@ -1371,16 +1742,16 @@ async function sendLoginLinkMessage(
   telegramUserId: string,
 ): Promise<Response> {
   const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenantId, telegramUserId);
-  return webhookSend(chatId, omniLoginText(ttlMinutes), loginKeyboard(appUrl, webUrl), false, true);
+  return webhookSend(chatId, omniLoginText(ttlMinutes) + ENV_NOTICE, loginEnvKeyboard(appUrl, webUrl), false, true);
 }
 
 async function sendStatusMessage(env: Env, chatId: number, tenantId: string): Promise<Response> {
   const rows = await listRecentDeployments(env, tenantId);
-  return webhookSend(chatId, formatDeploymentStatus(rows), omniMainMenuKeyboard());
+  return webhookSend(chatId, formatDeploymentStatus(rows), omniEnvMenuKeyboard(), false, true);
 }
 
 async function sendRendered(chatId: number, view: RenderedView): Promise<Response> {
-  return webhookSend(chatId, view.text, view.keyboard, view.html);
+  return webhookSend(chatId, view.text, view.keyboard, view.html, view.protect === true);
 }
 
 async function handleErrorView(
@@ -1433,7 +1804,7 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
       case "status":
         return sendStatusMessage(env, message.chat.id, tenant.id);
       case "help":
-        return webhookSend(message.chat.id, omniHelpText(), omniBackMenuKeyboard());
+        return webhookSend(message.chat.id, helpIndexText(), helpIndexKeyboard(), true);
       case "cancel": {
         await clearWizard(env, telegramUserId);
         await clearPanelFlow(env, telegramUserId);
@@ -1448,9 +1819,9 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
       case "donate":
         return sendRendered(message.chat.id, renderDonationIntro(isAdminUserId(env, telegramUserId)));
       case "health":
-        return sendRendered(message.chat.id, await renderHealthView(env, tenant.id, telegramUserId));
+        return sendRendered(message.chat.id, { ...(await renderHealthView(env, tenant.id, telegramUserId)), protect: true });
       case "usage":
-        return sendRendered(message.chat.id, await renderUsageView(env, tenant.id, telegramUserId));
+        return sendRendered(message.chat.id, { ...(await renderUsageView(env, tenant.id, telegramUserId)), protect: true });
       default: {
         if (await forwardToOmni(env, update)) return json({ ok: true });
         return webhookSend(message.chat.id, omniUnknownCommandText(), omniMainMenuKeyboard());
@@ -1481,7 +1852,10 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
     return sendStatusMessage(env, message.chat.id, tenant.id);
   }
   if (text === OMNI_MENU_TEXT_HELP) {
-    return webhookSend(message.chat.id, omniHelpText(), omniBackMenuKeyboard());
+    return webhookSend(message.chat.id, helpIndexText(), helpIndexKeyboard(), true);
+  }
+  if (text === OMNI_MENU_TEXT_CHECK) {
+    return sendRendered(message.chat.id, await renderRadarCheckView(env));
   }
   if (text === OMNI_MENU_TEXT_CLEAN_IP) {
     return sendRendered(message.chat.id, await renderCleanIpView(env, "mci", "tehran"));
@@ -1496,10 +1870,10 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
     return sendRendered(message.chat.id, renderDonationIntro(isAdminUserId(env, telegramUserId)));
   }
   if (text === OMNI_MENU_TEXT_HEALTH) {
-    return sendRendered(message.chat.id, await renderHealthView(env, tenant.id, telegramUserId));
+    return sendRendered(message.chat.id, { ...(await renderHealthView(env, tenant.id, telegramUserId)), protect: true });
   }
   if (text === OMNI_MENU_TEXT_USAGE) {
-    return sendRendered(message.chat.id, await renderUsageView(env, tenant.id, telegramUserId));
+    return sendRendered(message.chat.id, { ...(await renderUsageView(env, tenant.id, telegramUserId)), protect: true });
   }
   if (text === OMNI_MENU_TEXT_HOME) {
     await clearWizard(env, telegramUserId);
@@ -1515,6 +1889,28 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
   const flow = await loadPanelFlow(env, telegramUserId);
   if (flow) {
     try {
+      if (flow.flow === "panel") {
+        return await handlePanelDeployText(env, message.chat.id, tenant.id, tenant.displayName, telegramUserId, flow, text);
+      }
+      if (flow.flow === "pack") {
+        const packResult = await processPanelFlowText(env, telegramUserId, tenant.id, flow, text);
+        if (packResult.kind === "prompt") {
+          return webhookSend(message.chat.id, packResult.text, panelFlowKeyboard(), true);
+        }
+        // The pack carries the operator's own UUID: copyable (it has to be pasted
+        // into a client) with an explicit "delete this message" escape hatch.
+        await sendView(env, message.chat.id, {
+          text: packResult.text,
+          keyboard: {
+            inline_keyboard: [
+              [{ text: "🧨 حذف این پیام", callback_data: "v13:delmsg" }],
+              [{ text: "👻 بستهٔ دیگر", callback_data: "v13:pack" }],
+            ],
+          },
+          html: true,
+        });
+        return json({ ok: true });
+      }
       const result = await processPanelFlowText(env, telegramUserId, tenant.id, flow, text);
       const followUp = result.followUp === "clean-ip"
         ? await renderCleanIpView(env, flow.data["operator"] ?? "mci", flow.data["city"] ?? "tehran")
@@ -1661,27 +2057,39 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
     if (data === "v13:login") {
       const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenant.id, telegramUserId);
       await answerCallback(env, query.id, "لینک ورود ساخته شد ✅");
-      await sendView(env, chatId, { text: omniLoginText(ttlMinutes), keyboard: loginKeyboard(appUrl, webUrl), html: false, protect: true });
+      await sendView(env, chatId, { text: omniLoginText(ttlMinutes) + ENV_NOTICE, keyboard: loginEnvKeyboard(appUrl, webUrl), html: false, protect: true });
       return json({ ok: true });
     }
     if (data === "v13:status") {
       if (messageId === undefined) return json({ ok: true });
       await answerCallback(env, query.id, "در حال دریافت وضعیت…");
       const rows = await listRecentDeployments(env, tenant.id);
-      await editView(env, chatId, messageId, { text: formatDeploymentStatus(rows), keyboard: omniMainMenuKeyboard(), html: false });
+      await editView(env, chatId, messageId, { text: formatDeploymentStatus(rows), keyboard: omniEnvMenuKeyboard(), html: false });
       return json({ ok: true });
     }
-    if (data === "v13:help") {
-      if (messageId === undefined) return json({ ok: true });
-      await answerCallback(env, query.id, "راهنما");
-      await editView(env, chatId, messageId, { text: omniHelpText(), keyboard: omniBackMenuKeyboard(), html: false });
+    if (data === "v13:help" || data.startsWith("v13:help:")) {
+      if (data === "v13:help") {
+        await answerCallback(env, query.id, "راهنما");
+        // Documentation is meant to be copied, so it leaves the locked message
+        // instead of editing inside it: a fresh, unprotected view.
+        await sendView(env, chatId, { text: helpIndexText(), keyboard: helpIndexKeyboard(), html: true });
+        return json({ ok: true });
+      }
+      const topic = findHelpTopic(data.slice("v13:help:".length));
+      if (!topic) {
+        await answerCallback(env, query.id, "بخش نامشخص است.", true);
+        return json({ ok: true });
+      }
+      await answerCallback(env, query.id, topic.label);
+      await sendView(env, chatId, { text: helpTopicText(topic), keyboard: helpTopicKeyboard(), html: true });
       return json({ ok: true });
     }
     if (data === "omni:home") {
       if (messageId === undefined) return json({ ok: true });
       await clearWizard(env, telegramUserId);
       await answerCallback(env, query.id, "منوی اصلی Omni");
-      await editView(env, chatId, messageId, { text: omniWelcomeText(), keyboard: omniMainMenuKeyboard(), html: false });
+      await telegramApi(env, "deleteMessage", { chat_id: chatId, message_id: messageId });
+      await sendView(env, chatId, { text: omniWelcomeText(), keyboard: omniMainMenuKeyboard(), html: false });
       return json({ ok: true });
     }
     if (data === "v13:delmsg") {
@@ -1717,7 +2125,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       }
       await answerCallback(env, query.id, "اتصال را انتخاب کنید.");
       const rows: TelegramInlineKeyboard["inline_keyboard"] = connections.map((connection) => ([
-        { text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40), callback_data: `wiz:conn:${connection.id}` },
+        { text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40), callback_data: `v13:conn-panel:${connection.id}` },
       ]));
       rows.push(cancelKeyboard().inline_keyboard[0]!);
       await editView(env, chatId, messageId, {
@@ -1727,17 +2135,72 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       });
       return json({ ok: true });
     }
-    const pickedConnection = deploymentIdFrom(data, "wiz:conn:");
+    const pickedConnection = deploymentIdFrom(data, "v13:conn-panel:");
     if (pickedConnection) {
       if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "پنل را انتخاب کنید.");
+      await editView(env, chatId, messageId, {
+        text: panelCatalogText(),
+        keyboard: panelCatalogKeyboard(pickedConnection),
+        html: true,
+      });
+      return json({ ok: true });
+    }
+    const panelPick = parsePanelPick(data);
+    if (panelPick) {
+      const spec = findPanel(panelPick.key);
+      if (!spec) {
+        await answerCallback(env, query.id, "چنین پنلی در کاتالوگ نداریم.", true);
+        return json({ ok: true });
+      }
+      await clearWizard(env, telegramUserId);
+      await clearPanelFlow(env, telegramUserId);
+      const flow: PanelFlow = { flow: "panel", step: FLOW_STEP_PANEL_NAME, data: { panel: spec.key } };
+      if (panelPick.connectionId) flow.data["connection"] = panelPick.connectionId;
+      await savePanelFlow(env, telegramUserId, flow);
+      await answerCallback(env, query.id, `${spec.name} — نام Worker را بفرستید`);
+      const view: RenderedView = { text: panelPromptFor(spec), keyboard: panelFlowKeyboard(), html: true };
+      if (messageId === undefined) await sendView(env, chatId, view);
+      else await editView(env, chatId, messageId, view);
+      return json({ ok: true });
+    }
+    if (data === "v13:dep-vps" || data.startsWith("v13:dep-vps:")) {
+      const connectionId = data.slice("v13:dep-vps:".length);
       try {
-        const boundary = await botConnectionBoundary(env, principal, pickedConnection);
+        const boundary = await botConnectionBoundary(env, principal, connectionId);
         const prompt = await beginDeployWizard(env, telegramUserId, boundary);
         await answerCallback(env, query.id, "شروع شد ✅");
-        await editView(env, chatId, messageId, { text: prompt.text, keyboard: prompt.keyboard, html: false });
+        const view: RenderedView = { text: prompt.text, keyboard: prompt.keyboard, html: false };
+        if (messageId === undefined) await sendView(env, chatId, view);
+        else await editView(env, chatId, messageId, view);
       } catch (error) {
         await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
       }
+      return json({ ok: true });
+    }
+    const panelDeleteYes = deploymentIdFrom(data, "v13:pdel-yes:");
+    if (panelDeleteYes) {
+      const outcome = await deletePanelDeployment(env, principal, panelDeleteYes);
+      await answerCallback(env, query.id, outcome.deleted ? "🗑 رکورد استقرار پنل حذف شد" : "این رکورد حذف‌شدنی نیست.");
+      if (messageId !== undefined) {
+        await editView(env, chatId, messageId, await renderDepsList(env, tenant.id, tenant.displayName, telegramUserId));
+      }
+      return json({ ok: true });
+    }
+    const panelDelete = deploymentIdFrom(data, "v13:pdel:");
+    if (panelDelete) {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "تأیید حذف رکورد");
+      await editView(env, chatId, messageId, {
+        text: "🗑 فقط رکورد این استقرار پنل حذف می‌شود؛ پنل روی Cloudflare دست‌نخورده می‌ماند (برای بستن واقعی، اتصال را ابطال کنید). ادامه می‌دهید؟",
+        keyboard: {
+          inline_keyboard: [
+            [{ text: "🗑 بله، رکورد حذف شود", callback_data: `v13:pdel-yes:${panelDelete}` }],
+            [{ text: "❌ منصرف شدم", callback_data: "v13:deps" }],
+          ],
+        },
+        html: false,
+      });
       return json({ ok: true });
     }
     if (data === "wiz:cancel") {
@@ -1745,8 +2208,9 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       await clearPanelFlow(env, telegramUserId);
       await answerCallback(env, query.id, "لغو شد.");
       if (messageId !== undefined) {
-        await editView(env, chatId, messageId, { text: omniWelcomeText(), keyboard: omniMainMenuKeyboard(), html: false });
+        await telegramApi(env, "deleteMessage", { chat_id: chatId, message_id: messageId });
       }
+      await sendView(env, chatId, { text: omniWelcomeText(), keyboard: omniMainMenuKeyboard(), html: false });
       return json({ ok: true });
     }
     if (data === "wiz:sni-def" || data === "wiz:ufw:1" || data === "wiz:ufw:0") {
@@ -1871,6 +2335,48 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         await answerCallback(env, query.id, "ابطال آغاز شد.");
         if (messageId !== undefined) {
           await editView(env, chatId, messageId, await renderDepDetail(env, tenant.id, tenant.displayName, telegramUserId, depRevokeYes));
+        }
+      } catch (error) {
+        await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
+      }
+      return json({ ok: true });
+    }
+    const depDelete = deploymentIdFrom(data, "v13:dep-del:");
+    if (depDelete && !data.startsWith("v13:dep-del-yes:")) {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "تأیید حذف");
+      await editView(env, chatId, messageId, {
+        text: "⚠️ رکورد این استقرار از دیتابیس حذف می‌شود (با همهٔ گزارش‌ها و توکن‌هایش). اگر نود هنوز روی Cloudflare زنده است، اول «🛑 ابطال» را بزنید.\n\nاین عمل قابل بازگشت نیست.",
+        keyboard: {
+          inline_keyboard: [
+            [{ text: "🗑 بله، حذف شود", callback_data: `v13:dep-del-yes:${depDelete}` }],
+            [{ text: "❌ منصرف شدم", callback_data: `v13:dep:${depDelete}` }],
+          ],
+        },
+        html: false,
+      });
+      return json({ ok: true });
+    }
+    const depDeleteYes = deploymentIdFrom(data, "v13:dep-del-yes:");
+    if (depDeleteYes) {
+      try {
+        await botDeleteDeployment(env, principal, depDeleteYes);
+        await audit(env, {
+          tenantId: tenant.id,
+          actorType: "telegram",
+          actorId: telegramUserId,
+          action: "deployment.delete",
+          resourceType: "deployment",
+          resourceId: depDeleteYes,
+          outcome: "success",
+        });
+        await answerCallback(env, query.id, "حذف شد 🗑");
+        if (messageId !== undefined) {
+          await editView(env, chatId, messageId, {
+            text: "🗑 رکورد استقرار حذف شد. برای دیدن بقیه: «📁 دیپلوی‌های من»",
+            keyboard: omniEnvMenuKeyboard(),
+            html: false,
+          });
         }
       } catch (error) {
         await answerError(env, chatId, tenant.id, telegramUserId, query.id, error);
