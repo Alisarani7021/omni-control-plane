@@ -49,6 +49,7 @@ import {
 } from "./deployments";
 import { createTemporaryApiTokenConnection } from "./api-token";
 import { dnsConnectGet, dnsConnectPost } from "./dns-connect";
+import { handleScanTick } from "./telegram";
 import { HttpError, json, methodNotAllowed, readJson, requireSameOrigin } from "./http";
 import {
   disconnectCloudflareConnection,
@@ -176,10 +177,14 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
       },
     });
   }
-  if (path === "/dns/connect") {
+  if (path === "/connect" || path === "/dns/connect") {
     if (request.method === "GET") return dnsConnectGet(request, env);
     if (request.method === "POST") return dnsConnectPost(request, env);
     return methodNotAllowed(["GET", "POST"]);
+  }
+  if (path === "/internal/scan-tick") {
+    if (request.method === "POST") return handleScanTick(request, env, ctx);
+    return methodNotAllowed(["POST"]);
   }
   if (path === "/login") {
     const wrongMethod = only(request, ["GET"]);

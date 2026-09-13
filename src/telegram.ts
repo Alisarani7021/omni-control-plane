@@ -51,12 +51,11 @@ import {
 import { aggregateMap, mapText, MAP_ISPS, MAP_TRANSPORT_LABELS, MAP_TRANSPORTS } from "./censorship-map";
 import { directRaceDomains, listRaceWinners, raceLine } from "./domestic-race";
 import {
-  addScanRange,
-  DNS_AUTO_RANGES,
   DNS_SCAN_INTERVAL_MINUTES,
-  ensureAutoRanges,
   healthyResolvers,
-  scanRangeNow,
+  rangeRoundSummary,
+  replaceScanRange,
+  runScanTick,
   scanRangeStatus,
   logDnsCenterAction,
   type RangeScanSummary,
@@ -64,7 +63,7 @@ import {
 } from "./dns-center";
 import { poisonLine, poisonSummary } from "./dns-poison";
 import { slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
-import { issueDnsConnectLink } from "./dns-connect";
+import { issueConnectLink } from "./dns-connect";
 import { latestRirSnapshot, rirCardLine } from "./geoip-ir";
 import { upsertDnsRecord } from "./cloudflare-api";
 import { clearWhiteHoleDrop, latestWhiteHoleDrop, publishWhiteHoleDrop, whiteHoleReadCommands, whiteHoleText } from "./whitehole";
@@ -818,13 +817,15 @@ async function renderConnsList(
   return { text: ["🔌 اتصال‌های فعال:", "", ...lines].join("\n"), keyboard: { inline_keyboard: rows }, html: false };
 }
 
-/** DNS-center-only token intake: its own one-time form, never the dedicated panel. */
-async function renderDnsConnectPrompt(env: Env, tenantId: string): Promise<RenderedView> {
-  const { url, ttlMinutes } = await issueDnsConnectLink(env, tenantId);
+/** Standalone token intake (DNS center or panels): one-time form, never the dedicated panel. */
+async function renderStandaloneConnectPrompt(env: Env, tenantId: string, next: "dns" | "panel"): Promise<RenderedView> {
+  const { url, ttlMinutes } = await issueConnectLink(env, tenantId, next);
   return {
     text: [
-      "🔑 <b>اتصال اختصاصی مرکز DNS</b>",
-      "مرکز DNS محیط جدا خودش را دارد: توکن اسکوپ‌شدهٔ Cloudflare را فقط در فرم تک‌مرحله‌ای خودِ مرکز DNS بگذارید — نه در چت، نه در پنل محیط اختصاصی.",
+      next === "dns" ? "🔑 <b>اتصال اختصاصی مرکز DNS</b>" : "🔑 <b>اتصال Cloudflare برای پنل‌ها</b>",
+      next === "dns"
+        ? "مرکز DNS محیط جدا خودش را دارد: توکن اسکوپ‌شدهٔ Cloudflare را فقط در فرم تک‌مرحله‌ای خودِ مرکز DNS بگذارید — نه در چت، نه در پنل محیط اختصاصی."
+        : "پنل‌ها روی اتصال Cloudflare خودتان استقرار می‌یابند — کاملاً جدا از محیط اختصاصی. فرم تک‌مرحله‌ای خودش را دارد؛ نه چت، نه پنل اختصاصی.",
       `لینک یک‌بارمصرف فرم (${ttlMinutes} دقیقه اعتبار) پایین همین پیام است.`,
       "بعد از ثبت، سازنده‌های Master/White/Slipstream خودکار همهٔ کارها (انتشار TXT و کانفیگ‌ها) را روی zone شما انجام می‌دهند.",
     ].join("\n"),
@@ -1130,6 +1131,105 @@ function renderDnsCenterView(): RenderedView {
   };
 }
 
+/** Secret-shared header so only this worker can chain its own scan ticks. */
+async function scanTickSecret(env: Env): Promise<string> {
+  return sha256(`${env.TELEGRAM_WEBHOOK_SECRET}:scan-tick`);
+}
+
+async function scanTickFetch(env: Env, rangeId: string): Promise<void> {
+  try {
+    const secret = await scanTickSecret(env);
+    const response = await fetch(`${new URL(env.PUBLIC_BASE_URL).origin}/internal/scan-tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Scan-Tick": secret },
+      body: JSON.stringify({ rangeId }),
+    });
+    if (!response.ok) console.error("scan_tick_chain_failed", { status: response.status });
+  } catch (error) {
+    console.error("scan_tick_chain_failed", { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/**
+ * Runs one bounded scan slice, edits the live message, and either chains the
+ * next tick (production, via ctx.waitUntil self-fetch) or recurses (tests).
+ * Every invocation stays small, so no runtime limit can kill a full /24.
+ */
+export async function advanceLiveScan(env: Env, ctx: ExecutionContext | null, rangeId: string): Promise<void> {
+  const row = await env.DB.prepare("SELECT live_chat_id, live_message_id, cidr FROM dns_scan_ranges WHERE id = ?")
+    .bind(rangeId)
+    .first<{ live_chat_id: string | null; live_message_id: number | null; cidr: string }>();
+  const chatId = row?.live_chat_id ? Number(row.live_chat_id) : null;
+  const messageId = row?.live_message_id ?? null;
+  let lastEdit = 0;
+  const onProgress = async (progress: ScanProgress): Promise<void> => {
+    if (chatId === null || messageId === null) return;
+    const now = Date.now();
+    if (now - lastEdit < 2500) return;
+    lastEdit = now;
+    await telegramApi(env, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text: liveScanText(row?.cidr ?? "", progress),
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }).catch(() => undefined);
+  };
+  try {
+    const tick = await runScanTick(env, rangeId, 8_000, onProgress);
+    if (!tick.done) {
+      if (ctx) {
+        ctx.waitUntil(scanTickFetch(env, rangeId));
+        return;
+      }
+      await advanceLiveScan(env, null, rangeId);
+      return;
+    }
+    const summary = await rangeRoundSummary(env, rangeId);
+    const card = rangeScanCardText(summary);
+    const keyboard = { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] };
+    if (chatId !== null && messageId !== null) {
+      await telegramApi(env, "editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text: card,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        reply_markup: keyboard,
+      }).catch(() => undefined);
+      return;
+    }
+    await sendView(env, chatId ?? 0, { text: card, keyboard, html: true });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error("dns_live_scan_failed", { rangeId, reason });
+    if (chatId !== null && messageId !== null) {
+      await telegramApi(env, "editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text: `⚠️ اسکن رنج با خطا متوقف شد: <code>${escapeHtml(reason)}</code>\nبا «🔄 تازه‌سازی» وضعیت را ببینید؛ کرن هر ۵ دقیقه ادامه می‌دهد.`,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }).catch(() => undefined);
+    }
+  }
+}
+
+/** POST /internal/scan-tick — the worker asks itself for the next scan slice. */
+export async function handleScanTick(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+  const provided = request.headers.get("X-Scan-Tick") ?? "";
+  const expected = await scanTickSecret(env);
+  if (!(await constantTimeEqual(provided, expected))) {
+    throw new HttpError(401, "invalid_scan_tick", "Unauthorized scan tick");
+  }
+  const body = (await readJson<{ rangeId?: unknown }>(request, 4096)) as { rangeId?: string };
+  const rangeId = typeof body.rangeId === "string" ? body.rangeId : "";
+  if (!rangeId) throw new HttpError(400, "invalid_input", "rangeId is required");
+  if (ctx) ctx.waitUntil(advanceLiveScan(env, ctx, rangeId));
+  else await advanceLiveScan(env, null, rangeId);
+  return json({ ok: true });
+}
+
 function liveScanText(cidr: string, progress: ScanProgress): string {
   const cells = 10;
   const done = Math.max(0, Math.min(cells, Math.floor((progress.scanned / Math.max(progress.total, 1)) * cells)));
@@ -1161,7 +1261,6 @@ function rangeScanCardText(summary: RangeScanSummary): string {
 }
 
 async function renderDnsScanView(env: Env, tenantId: string): Promise<RenderedView> {
-  await ensureAutoRanges(env, tenantId);
   const [healthy, ranges] = await Promise.all([healthyResolvers(env, tenantId), scanRangeStatus(env, tenantId)]);
   const lines = [
     "🔎 <b>یافتن DNS سالم</b> — پرسش واقعی TCP/53 از هر آدرس رنج؛ سالم = پاسخ درست به کاناری، بدون جواب سیاه‌چاله.",
@@ -1175,8 +1274,7 @@ async function renderDnsScanView(env: Env, tenantId: string): Promise<RenderedVi
       const state = range.last_scan_at
         ? `آخرین دور: ${range.last_scan_at.slice(0, 16).replace("T", " ")}`
         : `در حال اسکن: ${range.cursor}/${range.ips_total}`;
-      const auto = DNS_AUTO_RANGES.includes(range.cidr) ? " · 🤖 خودکار سامانه" : "";
-      lines.push(`• رنج <code>${escapeHtml(range.cidr)}</code> (${range.ips_total} آدرس) — ${state}${auto}`);
+      lines.push(`• رنج <code>${escapeHtml(range.cidr)}</code> (${range.ips_total} آدرس) — ${state}`);
     }
     lines.push("");
     if (healthy.length === 0) {
@@ -1863,7 +1961,7 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
   }
   if (data === "v13:dns:connect") {
     await answerCallback(env, queryId, "فرم اتصال مرکز DNS");
-    await edit(await renderDnsConnectPrompt(env, tenantId));
+    await edit(await renderStandaloneConnectPrompt(env, tenantId, "dns"));
     return true;
   }
   if (data === "v13:dnsb:master" || data === "v13:dnsb:white" || data === "v13:dnsb:slip") {
@@ -2138,73 +2236,26 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env, ctx?: Execu
       }
       if (flow.flow === "dnsrange") {
         try {
-          const parsed = await addScanRange(env, tenant.id, text);
+          const parsed = await replaceScanRange(env, tenant.id, text);
           await clearPanelFlow(env, telegramUserId);
           const sent = await telegramApi(env, "sendMessage", {
             chat_id: message.chat.id,
-            text: `✅ رنج <code>${escapeHtml(parsed.cidr)}</code> (${parsed.ips.length} آدرس) ثبت شد؛ اسکن زنده شروع شد — شمارنده‌ها در همین پیام جلو می‌روند.`,
+            text: `${liveScanText(parsed.cidr, { scanned: 0, total: parsed.ips.length, healthy: 0, fake: 0, wrong: 0, unreachable: 0 })}\nرنج‌های قبلی پاک شدند؛ فقط همین رنج، همین‌جا و کامل اسکن می‌شود.`,
             parse_mode: "HTML",
             disable_web_page_preview: true,
           });
           const progressId = (sent.result as { message_id?: number } | undefined)?.message_id;
-          let lastEdit = 0;
-          const onProgress = async (progress: ScanProgress): Promise<void> => {
-            if (progressId === undefined) return;
-            const now = Date.now();
-            if (now - lastEdit < 2500) return;
-            lastEdit = now;
-            await telegramApi(env, "editMessageText", {
-              chat_id: message.chat.id,
-              message_id: progressId,
-              text: liveScanText(parsed.cidr, progress),
-              parse_mode: "HTML",
-              disable_web_page_preview: true,
-            }).catch(() => undefined);
-          };
-          const finish = async (): Promise<void> => {
-           try {
-            const summary = await scanRangeNow(env, tenant.id, parsed.cidr, onProgress);
-            const card = rangeScanCardText(summary);
-            const keyboard = { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] };
-            if (progressId !== undefined) {
-              await telegramApi(env, "editMessageText", {
-                chat_id: message.chat.id,
-                message_id: progressId,
-                text: card,
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                reply_markup: keyboard,
-              }).catch(() => undefined);
-              return;
-            }
-            await sendView(env, message.chat.id, { text: card, keyboard, html: true });
-           } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error);
-            console.error("dns_live_scan_failed", { cidr: parsed.cidr, reason });
-            const failText = `⚠️ اسکن زندهٔ رنج <code>${escapeHtml(parsed.cidr)}</code> با خطا متوقف شد: <code>${escapeHtml(reason)}</code>\nرنج ثبت شده می‌ماند و cron هر ۵ دقیقه ادامه می‌دهد؛ با «🔄 تازه‌سازی» وضعیت را ببینید.`;
-            if (progressId !== undefined) {
-              await telegramApi(env, "editMessageText", {
-                chat_id: message.chat.id,
-                message_id: progressId,
-                text: failText,
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-              }).catch(() => undefined);
-              return;
-            }
-            await sendView(env, message.chat.id, { text: failText, keyboard: omniBackMenuKeyboard(), html: true });
-           }
-          };
+          await env.DB.prepare("UPDATE dns_scan_ranges SET live_chat_id = ?, live_message_id = ? WHERE id = ?")
+            .bind(String(message.chat.id), progressId ?? null, parsed.rangeId)
+            .run();
           if (ctx) {
-            ctx.waitUntil(finish());
+            ctx.waitUntil(scanTickFetch(env, parsed.rangeId));
             return json({ ok: true });
           }
-          await finish();
+          await advanceLiveScan(env, null, parsed.rangeId);
           return json({ ok: true });
         } catch (error) {
-          const reason = error instanceof HttpError && error.message.includes("already registered")
-            ? "این رنج قبلاً ثبت شده و خودش هر ۳۰ دقیقه اسکن می‌شود؛ با «🔄 تازه‌سازی» کارت را ببینید."
-            : faErrorMessage(error) ?? "رنج معتبر نیست؛ مثال: 178.22.122.0/24";
+          const reason = faErrorMessage(error) ?? "رنج معتبر نیست؛ مثال: 178.22.122.0/24";
           return webhookSend(message.chat.id, `⚠️ ${reason}`, panelFlowKeyboard());
         }
       }
@@ -2504,7 +2555,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
             env,
             chatId,
             messageId,
-            await renderConnectPrompt(env, tenant.id, telegramUserId, `🚀 پنل‌ها روی اتصال Cloudflare خودتان استقرار می‌یابند — کاملاً جدا از محیط اختصاصی. اول با فرم امن پنل اتصال بسازید، بعد دوباره همین پنل را بزنید.`),
+            await renderStandaloneConnectPrompt(env, tenant.id, "panel"),
           );
           return json({ ok: true });
         }
@@ -2542,7 +2593,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
             env,
             chatId,
             messageId,
-            await renderConnectPrompt(env, tenant.id, telegramUserId, "🖥️ ویزارد VPS روی اتصال Cloudflare خودتان اجرا می‌شود — جدا از محیط اختصاصی. اول اتصال بسازید، بعد دوباره بزنید."),
+            await renderStandaloneConnectPrompt(env, tenant.id, "panel"),
           );
           return json({ ok: true });
         }

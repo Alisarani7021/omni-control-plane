@@ -20,12 +20,6 @@ export const DNS_SCAN_INTERVAL_MINUTES = 30;
 export const DNS_SCAN_PROBE_TIMEOUT_MS = 2_500;
 export const DNS_SCAN_RETENTION_HOURS = 24;
 export const DNS_MAX_RANGES_PER_TENANT = 8;
-/**
- * System baseline ranges the center always keeps scanning on its own so a
- * fresh tenant immediately has honest healthy upstreams (global anycast
- * resolvers). User ranges are added on top of these, never instead of them.
- */
-export const DNS_AUTO_RANGES: readonly string[] = ["1.1.1.0/24", "8.8.8.0/24", "9.9.9.0/24"];
 export const DNS_SCAN_MAX_RANGES_PER_TICK = 4;
 
 export type DnsVerdict = "healthy" | "fake" | "wrong" | "unreachable";
@@ -195,57 +189,21 @@ export async function probeResolver(ip: string): Promise<ProbeResult> {
   }
 }
 
-export async function addScanRange(env: Env, tenantId: string, cidr: string): Promise<ParsedRange> {
+export async function replaceScanRange(env: Env, tenantId: string, cidr: string): Promise<ParsedRange & { rangeId: string }> {
   const parsed = parseCidr(cidr);
   if (!parsed) throw new HttpError(400, "invalid_input", "Range must be an IPv4 or /24../32 CIDR");
-  const duplicate = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ? AND cidr = ?")
-    .bind(tenantId, parsed.cidr)
-    .first<{ id: string }>();
-  if (duplicate) {
-    throw new HttpError(409, "invalid_deployment_state", `Range ${parsed.cidr} is already registered; it keeps auto-scanning`);
+  const old = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ?").bind(tenantId).all<{ id: string }>();
+  for (const row of old.results) {
+    await env.DB.prepare("DELETE FROM dns_scan_results WHERE range_id = ?").bind(row.id).run();
+    await env.DB.prepare("DELETE FROM dns_scan_ranges WHERE id = ?").bind(row.id).run();
   }
-  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM dns_scan_ranges WHERE tenant_id = ?")
-    .bind(tenantId)
-    .first<{ n: number }>();
-  if ((count?.n ?? 0) >= DNS_MAX_RANGES_PER_TENANT) {
-    throw new HttpError(409, "invalid_deployment_state", `At most ${DNS_MAX_RANGES_PER_TENANT} active scan ranges per tenant`);
-  }
+  const rangeId = crypto.randomUUID();
   await env.DB.prepare(
     "INSERT INTO dns_scan_ranges (id, tenant_id, cidr, ips_total, cursor, created_at) VALUES (?, ?, ?, ?, 0, ?)",
   )
-    .bind(crypto.randomUUID(), tenantId, parsed.cidr, parsed.ips.length, nowIso())
+    .bind(rangeId, tenantId, parsed.cidr, parsed.ips.length, nowIso())
     .run();
-  return parsed;
-}
-
-/**
- * Keeps the system baseline ranges present for every tenant: any missing auto
- * range is (re)added on each scan-view render and cron pass, so the center
- * always has something scanning "by itself", even for tenants that already
- * handed in their own ranges before this feature existed.
- */
-export async function ensureAutoRanges(env: Env, tenantId: string): Promise<number> {
-  let added = 0;
-  for (const cidr of DNS_AUTO_RANGES) {
-    const existing = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ? AND cidr = ?")
-      .bind(tenantId, cidr)
-      .first<{ id: string }>();
-    if (existing) continue;
-    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM dns_scan_ranges WHERE tenant_id = ?")
-      .bind(tenantId)
-      .first<{ n: number }>();
-    if ((count?.n ?? 0) >= DNS_MAX_RANGES_PER_TENANT) break;
-    const parsed = parseCidr(cidr);
-    if (!parsed) continue;
-    await env.DB.prepare(
-      "INSERT INTO dns_scan_ranges (id, tenant_id, cidr, ips_total, cursor, created_at) VALUES (?, ?, ?, ?, 0, ?)",
-    )
-      .bind(crypto.randomUUID(), tenantId, parsed.cidr, parsed.ips.length, nowIso())
-      .run();
-    added += 1;
-  }
-  if (added > 0) console.log("dns_auto_ranges_seeded", { tenantId, added });
-  return added;
+  return { cidr: parsed.cidr, ips: parsed.ips, rangeId };
 }
 
 export interface ScanProgress {
@@ -267,80 +225,87 @@ export interface RangeScanSummary {
   top: Array<{ ip: string; rttMs: number | null }>;
 }
 
-/**
- * Immediate full-precision pass over every address of a range (waves of 16
- * parallel TCP/53 probes), replacing the range's stored results. Used the
- * moment the user hands a range to the bot; cron keeps refreshing afterwards.
- */
-export async function scanRangeNow(
+/** Bounded scan slice used by the self-chaining live tick and by cron. */
+export async function runScanTick(
   env: Env,
-  tenantId: string,
-  cidr: string,
+  rangeId: string,
+  budgetMs: number,
   onProgress?: (progress: ScanProgress) => Promise<void>,
-): Promise<RangeScanSummary> {
-  const parsed = parseCidr(cidr);
-  if (!parsed) throw new HttpError(400, "invalid_input", "Range must be an IPv4 or /24../32 CIDR");
-  let row = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ? AND cidr = ?")
-    .bind(tenantId, parsed.cidr)
-    .first<{ id: string }>();
-  if (!row) {
-    await addScanRange(env, tenantId, parsed.cidr);
-    row = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ? AND cidr = ?")
-      .bind(tenantId, parsed.cidr)
-      .first<{ id: string }>();
+): Promise<{ done: boolean; progress: ScanProgress }> {
+  const row = await env.DB.prepare("SELECT cidr, cursor, ips_total FROM dns_scan_ranges WHERE id = ?")
+    .bind(rangeId)
+    .first<{ cidr: string; cursor: number; ips_total: number }>();
+  if (!row) throw new HttpError(404, "not_found", "Scan range is gone");
+  const parsed = parseCidr(row.cidr);
+  if (!parsed) throw new HttpError(400, "invalid_input", "Stored range is invalid");
+  if (row.cursor === 0) {
+    await env.DB.prepare("DELETE FROM dns_scan_results WHERE range_id = ?").bind(rangeId).run();
   }
-  if (!row) throw new HttpError(500, "internal_error", "Scan range row missing after insert");
-  const rangeId = row.id;
-  const checkedAt = nowIso();
-  const collected: Array<{ ip: string; verdict: DnsVerdict; rttMs: number | null }> = [];
-  const progress: ScanProgress = { scanned: 0, total: parsed.ips.length, healthy: 0, fake: 0, wrong: 0, unreachable: 0 };
-  for (let index = 0; index < parsed.ips.length; index += 16) {
-    const wave = parsed.ips.slice(index, index + 16);
+  const progress: ScanProgress = { scanned: row.cursor, total: parsed.ips.length, healthy: 0, fake: 0, wrong: 0, unreachable: 0 };
+  const before = await env.DB.prepare("SELECT verdict, COUNT(*) AS n FROM dns_scan_results WHERE range_id = ? GROUP BY verdict")
+    .bind(rangeId)
+    .all<{ verdict: string; n: number }>();
+  for (const item of before.results) {
+    if (item.verdict === "healthy") progress.healthy += item.n;
+    else if (item.verdict === "fake") progress.fake += item.n;
+    else if (item.verdict === "wrong") progress.wrong += item.n;
+    else progress.unreachable += item.n;
+  }
+  const started = Date.now();
+  let cursor = row.cursor;
+  while (cursor < parsed.ips.length && Date.now() - started < budgetMs) {
+    const wave = parsed.ips.slice(cursor, cursor + 16);
     const results = await Promise.all(wave.map((ip) => probeResolver(ip)));
-    for (let offset = 0; offset < wave.length; offset += 1) {
-      const verdict = results[offset]?.verdict ?? "unreachable";
-      collected.push({ ip: wave[offset] ?? "", verdict, rttMs: results[offset]?.rttMs ?? null });
-      progress.scanned += 1;
+    const inserts = wave.map((ip, index) => {
+      const verdict = results[index]?.verdict ?? ("unreachable" as DnsVerdict);
+      const rttMs = results[index]?.rttMs ?? null;
       if (verdict === "healthy") progress.healthy += 1;
       else if (verdict === "fake") progress.fake += 1;
       else if (verdict === "wrong") progress.wrong += 1;
       else progress.unreachable += 1;
-    }
+      progress.scanned += 1;
+      return env.DB.prepare(
+        "INSERT INTO dns_scan_results (id, range_id, ip, ok, rtt_ms, verdict, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).bind(crypto.randomUUID(), rangeId, ip, verdict === "healthy" ? 1 : 0, rttMs, verdict, nowIso());
+    });
+    await env.DB.batch(inserts);
+    cursor += wave.length;
+    await env.DB.prepare("UPDATE dns_scan_ranges SET cursor = ?, last_scan_at = ? WHERE id = ?")
+      .bind(cursor, nowIso(), rangeId)
+      .run();
     if (onProgress) await onProgress({ ...progress });
   }
-  await env.DB.prepare("DELETE FROM dns_scan_results WHERE range_id = ?").bind(rangeId).run();
-  const inserts = collected.map((item) =>
-    env.DB.prepare(
-      "INSERT INTO dns_scan_results (id, range_id, ip, ok, rtt_ms, verdict, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).bind(crypto.randomUUID(), rangeId, item.ip, item.verdict === "healthy" ? 1 : 0, item.rttMs, item.verdict, checkedAt),
-  );
-  for (let index = 0; index < inserts.length; index += 100) {
-    await env.DB.batch(inserts.slice(index, index + 100));
+  const done = cursor >= parsed.ips.length;
+  if (done) {
+    await env.DB.prepare("UPDATE dns_scan_ranges SET cursor = 0, finished_at = ?, last_scan_at = ? WHERE id = ?")
+      .bind(nowIso(), nowIso(), rangeId)
+      .run();
   }
-  await env.DB.prepare("UPDATE dns_scan_ranges SET cursor = 0, last_scan_at = ?, finished_at = ? WHERE id = ?")
-    .bind(checkedAt, checkedAt, rangeId)
-    .run();
-  const summary: RangeScanSummary = { cidr: parsed.cidr, total: collected.length, healthy: 0, fake: 0, wrong: 0, unreachable: 0, top: [] };
-  for (const item of collected) {
+  return { done, progress };
+}
+
+/** Honest final summary of the stored round, read back from results. */
+export async function rangeRoundSummary(env: Env, rangeId: string): Promise<RangeScanSummary> {
+  const row = await env.DB.prepare("SELECT cidr FROM dns_scan_ranges WHERE id = ?").bind(rangeId).first<{ cidr: string }>();
+  const stored = await env.DB.prepare("SELECT verdict, ip, rtt_ms FROM dns_scan_results WHERE range_id = ?")
+    .bind(rangeId)
+    .all<{ verdict: string; ip: string; rtt_ms: number | null }>();
+  const summary: RangeScanSummary = { cidr: row?.cidr ?? "", total: stored.results.length, healthy: 0, fake: 0, wrong: 0, unreachable: 0, top: [] };
+  for (const item of stored.results) {
     if (item.verdict === "healthy") {
       summary.healthy += 1;
-      summary.top.push({ ip: item.ip, rttMs: item.rttMs });
+      summary.top.push({ ip: item.ip, rttMs: item.rtt_ms });
     } else if (item.verdict === "fake") summary.fake += 1;
     else if (item.verdict === "wrong") summary.wrong += 1;
     else summary.unreachable += 1;
   }
-  summary.top.sort((a, b) => (a.rttMs ?? 9999) - (b.rttMs ?? 9999));
+  summary.top.sort((x, y) => (x.rttMs ?? 9999) - (y.rttMs ?? 9999));
   summary.top = summary.top.slice(0, 8);
-  console.log("dns_range_full_scan", { cidr: summary.cidr, healthy: summary.healthy, total: summary.total });
   return summary;
 }
 
 /** Cron entry: probe due ranges chunk-by-chunk; a full pass repeats every 30 minutes. */
 export async function scanDueRanges(env: Env): Promise<number> {
-  const tenants = await env.DB.prepare("SELECT DISTINCT tenant_id FROM dns_scan_ranges").all<{ tenant_id: string }>();
-  for (const row of tenants.results) {
-    await ensureAutoRanges(env, row.tenant_id).catch(() => 0);
-  }
   const cutoff = new Date(Date.now() - DNS_SCAN_INTERVAL_MINUTES * 60_000).toISOString();
   const due = await env.DB.prepare(
     `SELECT id, cidr, ips_total, cursor FROM dns_scan_ranges

@@ -88,7 +88,8 @@ describe("DNS center standalone Cloudflare connect form", () => {
     const body = await response.text();
     expect(response.status).toBe(200);
     expect(body).toContain("مرکز DNS — اتصال Cloudflare");
-    expect(body).toContain('action="/dns/connect"');
+    expect(body).toContain("dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=");
+    expect(body).toContain('action="/connect"');
     expect(body).not.toContain("/app");
   });
 

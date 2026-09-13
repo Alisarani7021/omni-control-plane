@@ -43,8 +43,25 @@ async function consumeLoginLink(env: Env, token: string): Promise<boolean> {
   return (consumed.meta.changes ?? 0) === 1;
 }
 
-/** One-time link for the DNS-center form (deliberately NOT the panel /login). */
-export async function issueDnsConnectLink(env: Env, tenantId: string): Promise<{ url: string; ttlMinutes: number }> {
+/**
+ * Cloudflare dashboard deep link that opens the token-creation page with every
+ * permission pre-configured (official template-URL format), so the user only
+ * picks one zone, presses Create and copies the token.
+ */
+export function cloudflareTokenTemplateUrl(): string {
+  const permissions = [
+    { key: "zone", type: "read" },
+    { key: "dns_records", type: "edit" },
+    { key: "workers_scripts", type: "edit" },
+    { key: "workers_kv_storage", type: "edit" },
+    { key: "d1", type: "edit" },
+  ];
+  const encoded = encodeURIComponent(JSON.stringify(permissions));
+  return `https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=${encoded}&accountId=*&zoneId=all&name=V13-OMNI-ROUTER`;
+}
+
+/** One-time link for the standalone connect form (deliberately NOT the panel /login). */
+export async function issueConnectLink(env: Env, tenantId: string, next: "dns" | "panel"): Promise<{ url: string; ttlMinutes: number }> {
   const raw = randomToken(32);
   const tokenHash = await sha256(raw);
   const ttlSeconds = 900;
@@ -53,7 +70,7 @@ export async function issueDnsConnectLink(env: Env, tenantId: string): Promise<{
   )
     .bind(tokenHash, tenantId, new Date(Date.now() + ttlSeconds * 1000).toISOString(), nowIso())
     .run();
-  const url = `${new URL(env.PUBLIC_BASE_URL).origin}/dns/connect?t=${encodeURIComponent(raw)}`;
+  const url = `${new URL(env.PUBLIC_BASE_URL).origin}/connect?t=${encodeURIComponent(raw)}&next=${next}`;
   return { url, ttlMinutes: Math.floor(ttlSeconds / 60) };
 }
 
@@ -79,20 +96,29 @@ ol{font-size:13px;line-height:2;color:#b9c2e0;padding-right:18px;margin:0 0 6px}
   );
 }
 
-function formBody(error: string | null, token: string): string {
+function formBody(error: string | null, token: string, next: "dns" | "panel"): string {
+  const title = next === "dns" ? "🌐 مرکز DNS — اتصال Cloudflare" : "🚀 پنل‌ها — اتصال Cloudflare";
+  const scopeNote = next === "dns"
+    ? "این فرم فقط و فقط مال <b>مرکز DNS</b> است؛ هیچ ربطی به محیط اختصاصی V13 ندارد.<br>"
+    : "این فرم فقط برای <b>استقرار پنل‌ها</b> است؛ هیچ ربطی به محیط اختصاصی V13 ندارد.<br>";
   return [
-    "<h1>🌐 مرکز DNS — اتصال Cloudflare</h1>",
-    "<p>این فرم فقط و فقط مال <b>مرکز DNS</b> است؛ هیچ ربطی به محیط اختصاصی V13 ندارد.<br>توکن API اسکوپ‌شده (دست‌کم <code>Zone:Zone:Read</code> و <code>Zone:DNS:Edit</code> روی یک zone) را این‌جا بگذارید تا سازنده‌های Master/White DNS مستقیم در zone خودتان منتشر کنند.</p>",
-    "<p>⚠️ توکن را هرگز در چت تلگرام نفرستید؛ فقط همین فرم.</p>",
-    "<a class=\"cf\" href=\"https://dash.cloudflare.com/profile/api-tokens\">☁️ یک کلیک: صفحهٔ ساخت توکن در Cloudflare</a>",
-    "<ol><li>در همان صفحه، تمپلیت آمادهٔ <b>Edit zone DNS</b> را «Use template» بزنید.</li><li>در بخش Zone Resources فقط <b>یک zone</b> را انتخاب کنید.</li><li>«Create Token» و سپس «Copy».</li><li>همین‌جا پیست کنید و «ثبت اتصال مرکز DNS» را بزنید.</li></ol>",
+    `<h1>${title}</h1>`,
+    `<p>${scopeNote}توکن API اسکوپ‌شده را این‌جا بگذارید تا همه‌چیز خودکار انجام شود.</p>`,
+    `<p>⚠️ توکن را هرگز در چت تلگرام نفرستید؛ فقط همین فرم.</p>`,
+    `<a class="cf" href="${escapeHtml(cloudflareTokenTemplateUrl())}">☁️ ساخت Token آماده در Cloudflare (همهٔ تنظیمات از قبل چیده شده)</a>`,
+    `<ol><li>روی دکمهٔ بالا بزنید: صفحهٔ ساخت توکن Cloudflare با <b>همهٔ دسترسی‌های لازم از قبل انتخاب‌شده</b> باز می‌شود.</li><li>فقط در بخش Zone Resources <b>یک zone</b> را انتخاب کنید.</li><li>«Continue» و «Create Token» و سپس «Copy».</li><li>همین‌جا پیست کنید و دکمهٔ ثبت را بزنید — بقیهٔ کارها خودکار است.</li></ol>`,
     error ? `<p class="err">${escapeHtml(error)}</p>` : "",
-    `<form method="post" action="/dns/connect">
+    `<form method="post" action="/connect">
 <input type="hidden" name="t" value="${escapeHtml(token)}">
+<input type="hidden" name="next" value="${next}">
 <input type="password" name="apiToken" autocomplete="off" placeholder="Cloudflare API Token" required minlength="20" maxlength="256">
-<button type="submit">ثبت اتصال مرکز DNS</button>
+<button type="submit">ثبت اتصال و ادامهٔ خودکار</button>
 </form>`,
   ].join("\n");
+}
+
+function nextOf(request: Request): "dns" | "panel" {
+  return new URL(request.url).searchParams.get("next") === "panel" ? "panel" : "dns";
 }
 
 export async function dnsConnectGet(request: Request, env: Env): Promise<Response> {
@@ -102,7 +128,7 @@ export async function dnsConnectGet(request: Request, env: Env): Promise<Respons
   if (!link) {
     return page("<h1>⌛ لینک معتبر نیست</h1><p class=\"err\">این لینک یک‌بارمصرف منقضی یا مصرف شده است. در ربات دوباره «🔑 اتصال Cloudflare» را بزنید تا لینک تازه ساخته شود.</p>", nonce);
   }
-  return page(formBody(null, token), nonce);
+  return page(formBody(null, token, nextOf(request)), nonce);
 }
 
 export async function dnsConnectPost(request: Request, env: Env): Promise<Response> {
@@ -111,6 +137,7 @@ export async function dnsConnectPost(request: Request, env: Env): Promise<Respon
   const form = new URLSearchParams(await request.text());
   const token = form.get("t") ?? "";
   const apiToken = form.get("apiToken") ?? "";
+  const next: "dns" | "panel" = form.get("next") === "panel" ? "panel" : "dns";
   const nonce = randomToken(16);
   const link = await peekLoginLink(env, token);
   if (!link) {
@@ -126,11 +153,11 @@ export async function dnsConnectPost(request: Request, env: Env): Promise<Respon
     const response = await createTemporaryApiTokenConnection(internal, env, principal);
     if (!response.ok) {
       const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
-      return page(formBody(payload?.error?.message ?? "Cloudflare توکن را نپذیرفت؛ اسکوپ zone را بررسی کنید.", token), nonce);
+      return page(formBody(payload?.error?.message ?? "Cloudflare توکن را نپذیرفت؛ اسکوپ zone را بررسی کنید.", token, next), nonce);
     }
   } catch (error) {
     const message = error instanceof HttpError ? error.message : "Cloudflare توکن را نپذیرفت؛ اسکوپ zone را بررسی کنید.";
-    return page(formBody(message, token), nonce);
+    return page(formBody(message, token, next), nonce);
   }
   await consumeLoginLink(env, token);
   await audit(env, {
@@ -141,8 +168,8 @@ export async function dnsConnectPost(request: Request, env: Env): Promise<Respon
     outcome: "success",
     request,
   });
-  return page(
-    "<h1>✅ اتصال مرکز DNS ساخته شد</h1><p class=\"ok\">اتصال Cloudflare فقط برای مرکز DNS ثبت شد.<br>به ربات برگردید؛ سازنده‌های Master DNS، White DNS و Slipstream حالا zone شما را می‌بینند و خودکار منتشر می‌کنند.</p>",
-    nonce,
-  );
+  const okBody = next === "dns"
+    ? "<h1>✅ اتصال مرکز DNS ساخته شد</h1><p class=\"ok\">به ربات برگردید؛ سازنده‌های Master DNS، White DNS و Slipstream حالا zone شما را می‌بینند و خودکار منتشر می‌کنند.</p>"
+    : "<h1>✅ اتصال ساخته شد</h1><p class=\"ok\">به ربات برگردید و همان پنل را دوباره بزنید؛ استقرار خودکار ادامه پیدا می‌کند.</p>";
+  return page(okBody, nonce);
 }

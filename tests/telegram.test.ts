@@ -929,7 +929,18 @@ describe("panel catalog independence + DNS builder connect key", () => {
   it("scans a handed-in range immediately and reports the precise verdict card", async () => {
     const { env } = createEnv({
       flowRow: { flow: "dnsrange", step: "dnsrange:cidr", state_json: "{}", expires_at: "2099-01-01T00:00:00.000Z" },
-      insertResults: { "SELECT id FROM dns_scan_": { id: "range-42" } },
+      insertResults: {
+        "SELECT id FROM dns_scan_": { id: "range-42" },
+        "SELECT cidr, cursor, ips": { cidr: "178.22.122.4/30", cursor: 0, ips_total: 4 },
+        "SELECT live_chat_id, liv": { live_chat_id: "555", live_message_id: null, cidr: "178.22.122.4/30" },
+        "SELECT cidr FROM dns_sca": { cidr: "178.22.122.4/30" },
+      },
+      telemetryRows: [
+        { verdict: "unreachable", ip: "178.22.122.1", rtt_ms: null },
+        { verdict: "unreachable", ip: "178.22.122.2", rtt_ms: null },
+        { verdict: "unreachable", ip: "178.22.122.3", rtt_ms: null },
+        { verdict: "unreachable", ip: "178.22.122.4", rtt_ms: null },
+      ],
     });
     const bodies: string[] = [];
     vi.stubGlobal(
@@ -952,7 +963,7 @@ describe("panel catalog independence + DNS builder connect key", () => {
     const response = await handleTelegramWebhook(webhookRequest(update), env);
     await response.json(); // webhook reply payload (final rendered view)
     const joined = bodies.join("\n");
-    expect(joined).toContain("اسکن زنده شروع شد");
+    expect(joined).toContain("اسکن زندهٔ رنج");
     expect(joined).toContain("اسکن کامل رنج");
     expect(joined).toContain("دسترس‌ناپذیر: 4");
   });
