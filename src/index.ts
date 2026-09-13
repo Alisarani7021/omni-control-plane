@@ -317,30 +317,54 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    const erased = await eraseExpiredApiTokens(env);
-    if (erased > 0) console.log("expired_api_tokens_erased", { count: erased });
-    const [cleanIp, map, drops, donations, poison, mtu, probes, race] = await Promise.all([
-      purgeExpiredCleanIpReports(env),
-      purgeExpiredMapReports(env),
-      purgeExpiredWhiteHoleDrops(env),
-      purgeExpiredDonations(env),
-      purgeExpiredPoisonReports(env),
-      purgeExpiredMtuReports(env),
-      purgeExpiredEdgeProbes(env),
-      purgeExpiredRaceReports(env),
-    ]);
-    if (cleanIp + map + drops + donations + poison + mtu + probes + race > 0) {
-      console.log("telemetry_purged", { cleanIp, map, drops, donations, poison, mtu, probes, race });
-    }
-    const probed = await runEdgeProbes(env);
-    if (probed > 0) console.log("edge_probes_run", { count: probed });
-    const rir = await refreshGeoipIr(env);
-    if (rir.updated) console.log("rir_snapshot_refreshed", { added: rir.added, removed: rir.removed, sha256: rir.sha256 });
-    const scanned = await scanDueRanges(env);
-    if (scanned > 0) console.log("dns_center_scanned", { count: scanned });
-    const dnsPurged = await purgeOldDnsScans(env);
-    if (dnsPurged > 0) console.log("dns_scans_purged", { count: dnsPurged });
-    const pruned = await purgeOldRirSnapshots(env);
-    if (pruned > 0) console.log("rir_snapshots_pruned", { count: pruned });
+    // One failing stage must never kill the rest of the tick: a missing table
+    // or a blocked fetch used to abort the handler before the DNS scan ran.
+    const stage = async (name: string, run: () => Promise<unknown>): Promise<void> => {
+      try {
+        await run();
+      } catch (error) {
+        console.error("cron_stage_failed", {
+          name,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    await stage("expired_api_tokens", async () => {
+      const erased = await eraseExpiredApiTokens(env);
+      if (erased > 0) console.log("expired_api_tokens_erased", { count: erased });
+    });
+    await stage("telemetry_purges", async () => {
+      const [cleanIp, map, drops, donations, poison, mtu, probes, race] = await Promise.all([
+        purgeExpiredCleanIpReports(env),
+        purgeExpiredMapReports(env),
+        purgeExpiredWhiteHoleDrops(env),
+        purgeExpiredDonations(env),
+        purgeExpiredPoisonReports(env),
+        purgeExpiredMtuReports(env),
+        purgeExpiredEdgeProbes(env),
+        purgeExpiredRaceReports(env),
+      ]);
+      if (cleanIp + map + drops + donations + poison + mtu + probes + race > 0) {
+        console.log("telemetry_purged", { cleanIp, map, drops, donations, poison, mtu, probes, race });
+      }
+    });
+    await stage("edge_probes", async () => {
+      const probed = await runEdgeProbes(env);
+      if (probed > 0) console.log("edge_probes_run", { count: probed });
+    });
+    await stage("geoip_ir", async () => {
+      const rir = await refreshGeoipIr(env);
+      if (rir.updated) console.log("rir_snapshot_refreshed", { added: rir.added, removed: rir.removed, sha256: rir.sha256 });
+    });
+    await stage("dns_scan", async () => {
+      const scanned = await scanDueRanges(env);
+      if (scanned > 0) console.log("dns_center_scanned", { count: scanned });
+      const dnsPurged = await purgeOldDnsScans(env);
+      if (dnsPurged > 0) console.log("dns_scans_purged", { count: dnsPurged });
+    });
+    await stage("rir_prune", async () => {
+      const pruned = await purgeOldRirSnapshots(env);
+      if (pruned > 0) console.log("rir_snapshots_pruned", { count: pruned });
+    });
   },
 };

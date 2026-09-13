@@ -120,3 +120,43 @@ describe("auto ranges + immediate full scan", () => {
     expect(executed.some((item) => item.sql.startsWith("UPDATE dns_scan_ranges SET cursor = 0"))).toBe(true);
   });
 });
+
+describe("cron resilience", () => {
+  it("keeps scanning DNS ranges even when an earlier cron stage explodes", async () => {
+    const executed: string[] = [];
+    const DB = {
+      prepare(sql: string) {
+        const api = {
+          sql,
+          params: [] as unknown[],
+          bind(...params: unknown[]) {
+            api.params = params;
+            return api;
+          },
+          run: async () => {
+            executed.push(sql);
+            return { success: true, meta: { changes: 1 } };
+          },
+          first: async <T>() => {
+            executed.push(sql);
+            if (sql.includes("mtu_reports")) throw new Error("no such table: mtu_reports");
+            if (sql.includes("COUNT(*)")) return { n: 8 } as unknown as T;
+            if (sql.includes("SELECT id FROM dns_scan_ranges")) return { id: "r" } as unknown as T;
+            return null as unknown as T;
+          },
+          all: async <T>() => {
+            executed.push(sql);
+            if (sql.includes("DISTINCT tenant_id")) return { results: [{ tenant_id: "t1" }] as T[] };
+            return { results: [] as T[] };
+          },
+        };
+        return api;
+      },
+      batch: async () => [],
+    };
+    const env = { DB } as never;
+    const worker = (await import("../src/index")).default;
+    await worker.scheduled({ cron: "*/5 * * * *" } as never, env);
+    expect(executed.some((sql) => sql.includes("FROM dns_scan_ranges"))).toBe(true);
+  });
+});

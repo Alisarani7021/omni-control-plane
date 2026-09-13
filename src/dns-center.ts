@@ -15,7 +15,7 @@ import { nowIso } from "./security";
 import type { Env } from "./types";
 
 export const DNS_SCAN_MIN_PREFIX = 24; // at most 256 addresses per range
-export const DNS_SCAN_CHUNK = 64; // addresses probed per cron tick per range
+export const DNS_SCAN_CHUNK = 128; // addresses probed per cron tick per range
 export const DNS_SCAN_INTERVAL_MINUTES = 30;
 export const DNS_SCAN_PROBE_TIMEOUT_MS = 2_500;
 export const DNS_SCAN_RETENTION_HOURS = 24;
@@ -26,7 +26,7 @@ export const DNS_MAX_RANGES_PER_TENANT = 8;
  * resolvers). User ranges are added on top of these, never instead of them.
  */
 export const DNS_AUTO_RANGES: readonly string[] = ["1.1.1.0/24", "8.8.8.0/24", "9.9.9.0/24"];
-export const DNS_SCAN_MAX_RANGES_PER_TICK = 2;
+export const DNS_SCAN_MAX_RANGES_PER_TICK = 4;
 
 export type DnsVerdict = "healthy" | "fake" | "wrong" | "unreachable";
 
@@ -218,14 +218,23 @@ export async function addScanRange(env: Env, tenantId: string, cidr: string): Pr
   return parsed;
 }
 
-/** Seeds the system baseline ranges the first time a tenant opens the scanner. */
+/**
+ * Keeps the system baseline ranges present for every tenant: any missing auto
+ * range is (re)added on each scan-view render and cron pass, so the center
+ * always has something scanning "by itself", even for tenants that already
+ * handed in their own ranges before this feature existed.
+ */
 export async function ensureAutoRanges(env: Env, tenantId: string): Promise<number> {
-  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM dns_scan_ranges WHERE tenant_id = ?")
-    .bind(tenantId)
-    .first<{ n: number }>();
-  if ((count?.n ?? 0) > 0) return 0;
   let added = 0;
   for (const cidr of DNS_AUTO_RANGES) {
+    const existing = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ? AND cidr = ?")
+      .bind(tenantId, cidr)
+      .first<{ id: string }>();
+    if (existing) continue;
+    const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM dns_scan_ranges WHERE tenant_id = ?")
+      .bind(tenantId)
+      .first<{ n: number }>();
+    if ((count?.n ?? 0) >= DNS_MAX_RANGES_PER_TENANT) break;
     const parsed = parseCidr(cidr);
     if (!parsed) continue;
     await env.DB.prepare(
@@ -328,6 +337,10 @@ export async function scanRangeNow(
 
 /** Cron entry: probe due ranges chunk-by-chunk; a full pass repeats every 30 minutes. */
 export async function scanDueRanges(env: Env): Promise<number> {
+  const tenants = await env.DB.prepare("SELECT DISTINCT tenant_id FROM dns_scan_ranges").all<{ tenant_id: string }>();
+  for (const row of tenants.results) {
+    await ensureAutoRanges(env, row.tenant_id).catch(() => 0);
+  }
   const cutoff = new Date(Date.now() - DNS_SCAN_INTERVAL_MINUTES * 60_000).toISOString();
   const due = await env.DB.prepare(
     `SELECT id, cidr, ips_total, cursor FROM dns_scan_ranges

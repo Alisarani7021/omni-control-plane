@@ -2162,6 +2162,7 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env, ctx?: Execu
             }).catch(() => undefined);
           };
           const finish = async (): Promise<void> => {
+           try {
             const summary = await scanRangeNow(env, tenant.id, parsed.cidr, onProgress);
             const card = rangeScanCardText(summary);
             const keyboard = { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] };
@@ -2177,6 +2178,22 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env, ctx?: Execu
               return;
             }
             await sendView(env, message.chat.id, { text: card, keyboard, html: true });
+           } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            console.error("dns_live_scan_failed", { cidr: parsed.cidr, reason });
+            const failText = `⚠️ اسکن زندهٔ رنج <code>${escapeHtml(parsed.cidr)}</code> با خطا متوقف شد: <code>${escapeHtml(reason)}</code>\nرنج ثبت شده می‌ماند و cron هر ۵ دقیقه ادامه می‌دهد؛ با «🔄 تازه‌سازی» وضعیت را ببینید.`;
+            if (progressId !== undefined) {
+              await telegramApi(env, "editMessageText", {
+                chat_id: message.chat.id,
+                message_id: progressId,
+                text: failText,
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+              }).catch(() => undefined);
+              return;
+            }
+            await sendView(env, message.chat.id, { text: failText, keyboard: omniBackMenuKeyboard(), html: true });
+           }
           };
           if (ctx) {
             ctx.waitUntil(finish());

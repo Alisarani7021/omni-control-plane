@@ -71,6 +71,8 @@ code{background:#0b1020;border:1px solid #2a3358;border-radius:6px;padding:2px 6
 input[type=password]{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #2a3358;background:#0b1020;color:#e8ecf8;font-size:14px}
 button{margin-top:14px;width:100%;padding:12px;border:0;border-radius:10px;background:#3b6df0;color:#fff;font-size:15px;font-weight:700}
 .err{background:#3a1420;border:1px solid #7a2438;color:#ffb4c0;border-radius:10px;padding:10px;font-size:13px}
+a.cf{display:block;text-align:center;text-decoration:none;background:#f6821f;color:#101010;font-weight:700;padding:12px;border-radius:10px;margin:14px 0 10px}
+ol{font-size:13px;line-height:2;color:#b9c2e0;padding-right:18px;margin:0 0 6px}
 .ok{background:#12351f;border:1px solid #2c7a44;color:#b8f5c8;border-radius:10px;padding:10px;font-size:14px;line-height:1.9}
 </style></head><body><main>${document}</main></body></html>`,
     nonce,
@@ -82,6 +84,8 @@ function formBody(error: string | null, token: string): string {
     "<h1>🌐 مرکز DNS — اتصال Cloudflare</h1>",
     "<p>این فرم فقط و فقط مال <b>مرکز DNS</b> است؛ هیچ ربطی به محیط اختصاصی V13 ندارد.<br>توکن API اسکوپ‌شده (دست‌کم <code>Zone:Zone:Read</code> و <code>Zone:DNS:Edit</code> روی یک zone) را این‌جا بگذارید تا سازنده‌های Master/White DNS مستقیم در zone خودتان منتشر کنند.</p>",
     "<p>⚠️ توکن را هرگز در چت تلگرام نفرستید؛ فقط همین فرم.</p>",
+    "<a class=\"cf\" href=\"https://dash.cloudflare.com/profile/api-tokens\">☁️ یک کلیک: صفحهٔ ساخت توکن در Cloudflare</a>",
+    "<ol><li>در همان صفحه، تمپلیت آمادهٔ <b>Edit zone DNS</b> را «Use template» بزنید.</li><li>در بخش Zone Resources فقط <b>یک zone</b> را انتخاب کنید.</li><li>«Create Token» و سپس «Copy».</li><li>همین‌جا پیست کنید و «ثبت اتصال مرکز DNS» را بزنید.</li></ol>",
     error ? `<p class="err">${escapeHtml(error)}</p>` : "",
     `<form method="post" action="/dns/connect">
 <input type="hidden" name="t" value="${escapeHtml(token)}">
