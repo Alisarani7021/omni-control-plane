@@ -2,6 +2,12 @@
 
 Build date: 2026-09-13
 
+## V13.5.1 — Independent DNS center
+
+- New top-level «🌐 مرکز DNS» section, deliberately not nested in any other hub: healthy-resolver discovery (user-supplied IPv4//24../32 range, real TCP/53 canary probes from the Worker, verdicts healthy/fake/wrong/unreachable, chunked cron scanning with a fresh full pass every 30 minutes, 3 active ranges per tenant, 24h retention), the DNS-poison test with operator+city picker producing a single copy-paste-ready command, and three config builders that act through the tenant's own scoped Cloudflare connection: Master DNS (own DoH + RFC 9462-style SVCB record + protected sing-box/Clash snippets), White DNS (personal whitelist published as read-only TXT chunks in the user's zone + sing-box routing snippet) and Slipstream (delegation on demand + slipnet:// line with the node public key).
+- Migration `0006_dns_center.sql`; cron wires `scanDueRanges` + `purgeOldDnsScans`.
+- Production fixes shipped alongside: APNIC as the real source of IR ranges (the previously used RIPE irnic path never existed), Telegram-HTML-safe how-to texts, typed Cloudflare API errors with honest Persian wording, and automatic connection rebind for sleeper beacon publishes.
+
 ## V13.5.0 — National-net intelligence
 
 - Network-state classification (`src/net-mode.ts`) with four honest states (open / throttled / national-only / blackout) plus an explicit `nodata` state; fed by two independent eyes: edge HTTPS probes run by the Worker cron every 5 minutes and inner agent reports. States render on the `/health` card and per-node detail with Persian labels; nothing is guessed without measurements.

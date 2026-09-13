@@ -802,9 +802,39 @@ describe("V13.5 dedicated net-intel keys", () => {
     const response = await handleTelegramWebhook(webhookRequest(update), env);
     expect(await response.json()).toEqual({ ok: true });
     const edited = bodies.find((body) => body.includes("editMessageText")) ?? bodies[1] ?? "";
-    for (const callback of ["v13:netmode", "v13:dnstest", "v13:rir", "v13:tun", "v13:race", "v13:slp"]) {
+    for (const callback of ["v13:netmode", "v13:rir", "v13:tun", "v13:race", "v13:slp"]) {
       expect(edited).toContain(callback);
     }
+    expect(edited).not.toContain("v13:dnstest"); // DNS lives in its own center
+  });
+
+  it("keeps the DNS center independent with its own keys", async () => {
+    const { env } = createEnv();
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(String(init?.body ?? ""));
+        return Response.json({ ok: true, result: true });
+      }),
+    );
+    const update: TelegramUpdate = {
+      update_id: 4301,
+      callback_query: {
+        id: "cq-dns",
+        data: "v13:dns",
+        from: { id: 555, is_bot: false, first_name: "Ali" },
+        message: { message_id: 45, chat: { id: 555, type: "private" } },
+      },
+    };
+    const response = await handleTelegramWebhook(webhookRequest(update), env);
+    expect(await response.json()).toEqual({ ok: true });
+    const edited = bodies.find((body) => body.includes("editMessageText")) ?? bodies[1] ?? "";
+    for (const callback of ["v13:dns:scan", "v13:dnstest", "v13:dnsb:master", "v13:dnsb:white", "v13:dnsb:slip"]) {
+      expect(edited).toContain(callback);
+    }
+    const menu = omniMainMenuKeyboard().inline_keyboard.flat().map((button) => button.callback_data);
+    expect(menu).toContain("v13:dns");
   });
 
   it("keeps the old map keyboard free of the new keys", async () => {

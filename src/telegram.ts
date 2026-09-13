@@ -33,6 +33,7 @@ import {
 } from "./panel-deploy";
 import { applySniDefault, applyUfwChoice, beginDeployWizard, cancelKeyboard, clearWizard, loadWizard, processWizardText } from "./telegram-wizard";
 import { audit, rateLimit } from "./db";
+import { getConnection, getValidCloudflareAuth } from "./cloudflare-api";
 import { HttpError, json, readJson } from "./http";
 import {
   cleanIpPool,
@@ -49,8 +50,16 @@ import {
 } from "./clean-ip";
 import { aggregateMap, mapText, MAP_ISPS, MAP_TRANSPORT_LABELS, MAP_TRANSPORTS } from "./censorship-map";
 import { directRaceDomains, listRaceWinners, raceLine } from "./domestic-race";
+import {
+  addScanRange,
+  DNS_SCAN_INTERVAL_MINUTES,
+  healthyResolvers,
+  masterDnsSvcbContent,
+  scanRangeStatus,
+  logDnsCenterAction,
+} from "./dns-center";
 import { poisonLine, poisonSummary, mtuSuggestion } from "./dns-poison";
-import { dnsTunnelCard, enableDnsTunnel } from "./dns-tunnel";
+import { dnsTunnelCard, enableDnsTunnel, slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
 import { latestRirSnapshot, rirCardLine, RIR_IR_URL } from "./geoip-ir";
 import { NET_MODE_LABELS, netModeForDeployment } from "./net-mode";
 import {
@@ -62,6 +71,7 @@ import {
   sleeperCard,
   type SleeperCommand,
 } from "./sleeper";
+import { upsertDnsRecord } from "./cloudflare-api";
 import { clearWhiteHoleDrop, latestWhiteHoleDrop, publishWhiteHoleDrop, whiteHoleReadCommands, whiteHoleText } from "./whitehole";
 import {
   DONATION_STATUS_LABELS,
@@ -76,6 +86,8 @@ import {
 import {
   clearPanelFlow,
   flowPrompt,
+  FLOW_STEP_DNS_RANGE,
+  FLOW_STEP_WHITE_DOMAINS,
   FLOW_STEP_DONATE_KEY,
   FLOW_STEP_MAP_CITY,
   FLOW_STEP_MAP_ISP,
@@ -238,6 +250,8 @@ const MENU_ROWS: TelegramInlineKeyboard["inline_keyboard"] = [
     { text: "🌪️ WhiteHole", callback_data: "v13:wh" },
     { text: "🎁 اهدای AI", callback_data: "v13:donate" },
   ],
+  // The DNS center is its own top-level section, never nested in other hubs.
+  [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
   [
     { text: "🔍 هلث چک", callback_data: "v13:check" },
     { text: "❓ راهنما", callback_data: "v13:help" },
@@ -1075,14 +1089,14 @@ function renderDnsTestView(env: Env, isp?: string, city?: string): RenderedView 
 function intelHubView(): RenderedView {
   return {
     text: [
-      "🧠 <b>هوش شبکه V13.5</b> — شش قابلیت مستقل، هرکدام با کلید و کارت و راهنمای اجرای خودش.",
+      "🧠 <b>هوش شبکه V13.5</b> — پنج قابلیت مستقل، هرکدام با کلید و کارت و راهنمای اجرای خودش؛",
+      "بخش DNS (تست مسمومیت، اسکن رنج، سازنده‌ها) کاملاً جدا در «🌐 مرکز DNS» زندگی می‌کند.",
       "همهٔ اعداد از اندازه‌گیری واقعی می‌آیند: پروب لبهٔ Worker (cron هر ۵ دقیقه)، گزارش ایجنت نود، و گزارش‌های crowd روی سرورهای خود کاربران.",
       "اگر اندازه‌گیری نباشد کارت صادقانه می‌گوید «داده‌ای نیست» — هیچ عددی جعل نمی‌شود.",
     ].join("\n"),
     keyboard: {
       inline_keyboard: [
         [{ text: "🧭 وضعیت شبکه", callback_data: "v13:netmode" }],
-        [{ text: "🧪 تست مسمومیت DNS", callback_data: "v13:dnstest" }],
         [{ text: "🇮🇷 رنج‌های ملی", callback_data: "v13:rir" }],
         [{ text: "🛰️ تونل DNS", callback_data: "v13:tun" }],
         [{ text: "🏘️ مستقیم ملی", callback_data: "v13:race" }],
@@ -1092,6 +1106,193 @@ function intelHubView(): RenderedView {
     },
     html: true,
   };
+}
+
+// ---------------------------------------------------------------------------
+// مرکز DNS — independent DNS center: healthy-resolver discovery + builders.
+// ---------------------------------------------------------------------------
+
+function dnsCenterKeyboard(): TelegramInlineKeyboard {
+  return {
+    inline_keyboard: [
+      [{ text: "🔎 یافتن DNS سالم (اسکن رنج)", callback_data: "v13:dns:scan" }],
+      [{ text: "🧪 تست مسمومیت DNS", callback_data: "v13:dnstest" }],
+      [{ text: "🛠️ سازندهٔ Master DNS", callback_data: "v13:dnsb:master" }],
+      [{ text: "🛡️ سازندهٔ White DNS", callback_data: "v13:dnsb:white" }],
+      [{ text: "🌊 سازندهٔ Slipstream", callback_data: "v13:dnsb:slip" }],
+      ...homeRow(),
+    ],
+  };
+}
+
+function renderDnsCenterView(): RenderedView {
+  return {
+    text: [
+      "🌐 <b>مرکز DNS</b> — بخش کاملاً مستقل DNS، جدا از همهٔ بخش‌های دیگر.",
+      "• 🔎 اسکن رنج: یک رنج بدهید، DNSهای سالمِ واقعی را پیدا می‌کند و هر ۳۰ دقیقه خودکار یافته‌های تازه می‌آورد.",
+      "• 🧪 تست مسمومیت: رزولورهای رایج را روی دستگاه خودتان می‌سنجد.",
+      "• 🛠️ سازنده‌ها: Master DNS (DoH اختصاصی + رکورد SVCB)، White DNS (لیست سفید روی zone خودتان) و Slipstream — همگی با اتصال اسکوپ‌شدهٔ Cloudflare خودتان.",
+    ].join("\n"),
+    keyboard: dnsCenterKeyboard(),
+    html: true,
+  };
+}
+
+async function renderDnsScanView(env: Env, tenantId: string): Promise<RenderedView> {
+  const [healthy, ranges] = await Promise.all([healthyResolvers(env, tenantId), scanRangeStatus(env, tenantId)]);
+  const lines = [
+    "🔎 <b>یافتن DNS سالم</b> — پرسش واقعی TCP/53 از هر آدرس رنج؛ سالم = پاسخ درست به کاناری، بدون جواب سیاه‌چاله.",
+    `بروزرسانی خودکار: هر ${DNS_SCAN_INTERVAL_MINUTES} دقیقه یک دور کامل تازه؛ یافته‌های زیر مال ۶۰ دقیقهٔ اخیرند.`,
+    "",
+  ];
+  if (ranges.length === 0) {
+    lines.push("هنوز رنجی ثبت نکرده‌اید؛ با «➕ رنج جدید» یک CIDR (بین /24 تا /32) بفرستید.");
+  } else {
+    for (const range of ranges) {
+      const state = range.last_scan_at
+        ? `آخرین دور: ${range.last_scan_at.slice(0, 16).replace("T", " ")}`
+        : `در حال اسکن: ${range.cursor}/${range.ips_total}`;
+      lines.push(`• رنج <code>${escapeHtml(range.cidr)}</code> (${range.ips_total} آدرس) — ${state}`);
+    }
+    lines.push("");
+    if (healthy.length === 0) {
+      lines.push("هنوز DNS سالمی در این رنج‌ها پیدا نشده؛ دور بعدی اسکن نتایج تازه می‌آورد (صداقت: عدد جعلی نداریم).");
+    } else {
+      lines.push("<b>DNSهای سالم یافت‌شده (سریع‌ترین اول):</b>");
+      for (const item of healthy) {
+        lines.push(`• <code>${escapeHtml(item.ip)}</code> · rtt ${item.rtt_ms ?? "؟"}ms · از رنج ${escapeHtml(item.cidr)}`);
+      }
+      lines.push("این IPها را می‌توانید به‌عنوان resolver دستی در کلاینت/پروفیل استفاده کنید.");
+    }
+  }
+  return {
+    text: lines.join("\n"),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "➕ رنج جدید", callback_data: "v13:dns:scan:new" }],
+        [{ text: "🔄 تازه‌سازی", callback_data: "v13:dns:scan" }],
+        [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
+        ...homeRow(),
+      ],
+    },
+    html: true,
+  };
+}
+
+async function renderBuilderPicker(env: Env, tenantId: string, kind: "master" | "white" | "slip"): Promise<RenderedView> {
+  const rows = await env.DB.prepare(
+    "SELECT id, worker_hostname, status FROM deployments WHERE tenant_id = ? AND status NOT IN ('revoked', 'revoking') ORDER BY created_at DESC",
+  )
+    .bind(tenantId)
+    .all<{ id: string; worker_hostname: string; status: string }>();
+  const titles = { master: "🛠️ Master DNS — کدام استقرار؟", white: "🛡️ White DNS — کدام استقرار؟", slip: "🌊 Slipstream — کدام استقرار؟" };
+  if (rows.results.length === 0) {
+    return { text: `${titles[kind]}\nهنوز استقرار فعالی ندارید.`, keyboard: { inline_keyboard: [...homeRow()] }, html: false };
+  }
+  const only = rows.results.length === 1 ? rows.results[0] : undefined;
+  if (only) return renderBuilderCard(env, tenantId, only.id, kind);
+  return {
+    text: titles[kind],
+    keyboard: {
+      inline_keyboard: [
+        ...rows.results.map((row) => [
+          { text: `${row.worker_hostname} · ${row.status}`, callback_data: `v13:dnsb:${kind}:${row.id}` },
+        ]),
+        [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
+        ...homeRow(),
+      ],
+    },
+    html: false,
+  };
+}
+
+async function renderBuilderCard(env: Env, tenantId: string, deploymentId: string, kind: "master" | "white" | "slip"): Promise<RenderedView> {
+  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
+  if (!deployment) return { text: "استقرار پیدا نشد.", keyboard: omniBackMenuKeyboard(), html: false };
+  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
+  let text = "";
+  if (kind === "master") {
+    text = [
+      "🛠️ <b>Master DNS — رزولور DoH اختصاصی خودتان</b>",
+      `روی دامنهٔ Worker خودتان آماده است: <code>https://${escapeHtml(deployment.worker_hostname)}/dns-query</code>`,
+      "اسپلیت قطعی: دامنه‌های ملی → رزولور ملی، بقیه → 1.1.1.1؛ فقط A/AAAA/TXT؛ یک پاسخ cache؛ سقف ساعتی.",
+      "کلید k همان کلید اشتراک شماست (فقط در پیام محافظ‌شدهٔ اشتراک‌ها نمایش داده می‌شود).",
+      "با دکمهٔ Cloudflare یک رکورد SVCB سبک RFC 9462 در zone شما ثبت می‌شود تا کلاینت‌ها رزولور خودتان را خودکار کشف کنند.",
+      "",
+      "نحوهٔ اجرا: ۱) دکمهٔ «URL و کانفیگ‌ها» → پیام محافظ‌شده با خط آمادهٔ sing-box/Clash. ۲) دکمهٔ Cloudflare → ثبت SVCB. ۳) در کلاینت، DoH خودتان را به‌عنوان resolver اصلی بگذارید.",
+    ].join("\n");
+    rows.push([{ text: "🔑 URL و کانفیگ‌ها (پیام محافظ‌شده)", callback_data: `v13:dnsb:master:${deployment.id}:url` }]);
+    rows.push([{ text: "☁️ ثبت رکورد SVCB در Cloudflare", callback_data: `v13:dnsb:master:${deployment.id}:cf` }]);
+  } else if (kind === "white") {
+    const direct = await directRaceDomains(env);
+    text = [
+      "🛡️ <b>White DNS — لیست سفید شخصی روی zone خودتان</b>",
+      "لیست سفید پیش‌فرض: برنده‌های مسابقهٔ «مستقیم» + دامنه‌های ملی پروفیل.",
+      direct.length > 0 ? `فعلاً: ${direct.slice(0, 8).map((domain) => `<code>${escapeHtml(domain)}</code>`).join("، ")}` : "فعلاً برندهٔ مستقیمی نداریم؛ لیست با دامنه‌های ملی پر می‌شود.",
+      "با دکمهٔ «دامنه‌های من» لیست دلخواه بفرستید؛ با دکمهٔ Cloudflare لیست به‌صورت TXTهای خواندنی (_white1…) در zone شما منتشر می‌شود و کانفیگ sing-box مسیر همین دامنه‌ها را روی DoH خودتان می‌اندازد.",
+      "",
+      "نحوهٔ اجرا: ۱) لیست را بفرستید. ۲) انتشار TXT. ۳) کانفیگ نمایش‌داده‌شده را در کلاینت بگذارید؛ نود/ایجنت هم می‌تواند لیست را خواندنی بخواند.",
+    ].join("\n");
+    rows.push([{ text: "✍️ دامنه‌های من", callback_data: `v13:dnsb:white:${deployment.id}:dom` }]);
+    rows.push([{ text: "☁️ انتشار TXT + کانفیگ", callback_data: `v13:dnsb:white:${deployment.id}:cf` }]);
+  } else {
+    const hasTunnel = deployment.dns_tunnel_enabled === 1;
+    const uri = deployment.dnstt_public_key && deployment.tunnel_hostname
+      ? slipnetUri(deployment.tunnel_hostname, deployment.dnstt_public_key, deployment.tunnel_mtu ?? TUNNEL_DEFAULT_MTU - 52)
+      : null;
+    text = [
+      "🌊 <b>Slipstream — کلاینت QUIC-over-DNS</b>",
+      hasTunnel
+        ? "delegation فعال است؛ کلید عمومی نود موجود است."
+        : "هنوز delegation فعال نیست؛ اول با دکمهٔ پایین NS رکورد t را بسازید و بعد بوت‌استرپ جدید را روی VPS اجرا کنید.",
+      uri ? `خط آمادهٔ اپ: <code>${escapeHtml(uri)}</code>` : "پس از نصب بوت‌استرپ، خط slipnet:// همین‌جا ساخته می‌شود.",
+      "اسپکی پین گواهی Slipstream در کارت تونل نمایش داده می‌شود؛ در اپ SlipNet فقط همین خط را paste کنید.",
+      "",
+      "نحوهٔ اجرا: ۱) فعال‌سازی delegation (اگر نیست). ۲) بوت‌استرپ روی VPS. ۳) paste خط در اپ. ۴) مهر سلامت: «🩺 TXT rtt».",
+    ].join("\n");
+    if (!hasTunnel) rows.push([{ text: "🛰️ فعال‌سازی delegation", callback_data: `v13:dnsb:slip:${deployment.id}:on` }]);
+    rows.push([{ text: "🔄 تازه‌سازی", callback_data: `v13:dnsb:slip:${deployment.id}` }]);
+  }
+  rows.push([{ text: "↩️ انتخاب استقرار دیگر", callback_data: `v13:dnsb:${kind}` }]);
+  rows.push([{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }]);
+  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
+  return { text, keyboard: { inline_keyboard: rows }, html: true };
+}
+
+async function ownedDeploymentRowOrThrow(env: Env, tenantId: string, deploymentId: string): Promise<DeploymentRow> {
+  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
+  if (!deployment) throw new HttpError(404, "deployment_not_found", "Deployment not found");
+  return deployment;
+}
+
+async function publishMasterSvcb(env: Env, tenantId: string, telegramUserId: string, deploymentId: string): Promise<string> {
+  const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
+  const connection = await getConnection(env, deployment.oauth_connection_id, tenantId);
+  const zoneId = connection.resource_zone_id ?? deployment.zone_id;
+  const zoneName = connection.resource_zone_name ?? deployment.worker_hostname.split(".").slice(1).join(".");
+  const auth = await getValidCloudflareAuth(env, connection);
+  const name = `_doh.${zoneName}`;
+  await upsertDnsRecord(auth, zoneId, "SVCB", name, masterDnsSvcbContent(deployment.worker_hostname), 300);
+  await logDnsCenterAction(env, tenantId, telegramUserId, "dns.master.svcb", deploymentId);
+  return name;
+}
+
+async function publishWhiteList(env: Env, tenantId: string, telegramUserId: string, deploymentId: string, domains: string[]): Promise<number> {
+  const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
+  const connection = await getConnection(env, deployment.oauth_connection_id, tenantId);
+  const zoneId = connection.resource_zone_id ?? deployment.zone_id;
+  const zoneName = connection.resource_zone_name ?? deployment.worker_hostname.split(".").slice(1).join(".");
+  const auth = await getValidCloudflareAuth(env, connection);
+  const joined = domains.join(",");
+  const chunks: string[] = [];
+  for (let index = 0; index < joined.length; index += 240) chunks.push(joined.slice(index, index + 240));
+  let published = 0;
+  for (let index = 0; index < Math.max(chunks.length, 1); index += 1) {
+    await upsertDnsRecord(auth, zoneId, "TXT", `_white${index + 1}.${zoneName}`, chunks[index] ?? "", 300);
+    published += 1;
+  }
+  await logDnsCenterAction(env, tenantId, telegramUserId, "dns.white.publish", deploymentId);
+  return published;
 }
 
 async function renderNetModeView(env: Env, tenantId: string): Promise<RenderedView> {
@@ -1753,6 +1954,94 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     return true;
   }
 
+  // --- مرکز DNS (independent section) ---
+  if (data === "v13:dns") {
+    await answerCallback(env, queryId, "مرکز DNS");
+    await edit(renderDnsCenterView());
+    return true;
+  }
+  if (data === "v13:dns:scan") {
+    await answerCallback(env, queryId, "اسکن DNS سالم");
+    await edit(await renderDnsScanView(env, tenantId));
+    return true;
+  }
+  if (data === "v13:dns:scan:new") {
+    const flow: PanelFlow = { flow: "dnsrange", step: FLOW_STEP_DNS_RANGE, data: {} };
+    await savePanelFlow(env, telegramUserId, flow);
+    await answerCallback(env, queryId, "رنج را بفرستید");
+    await edit({ text: flowPrompt(flow), keyboard: panelFlowKeyboard(), html: true });
+    return true;
+  }
+  if (data === "v13:dnsb:master" || data === "v13:dnsb:white" || data === "v13:dnsb:slip") {
+    const kind = data.slice("v13:dnsb:".length) as "master" | "white" | "slip";
+    await answerCallback(env, queryId, "سازندهٔ کانفیگ");
+    await edit(await renderBuilderPicker(env, tenantId, kind));
+    return true;
+  }
+  if (data.startsWith("v13:dnsb:")) {
+    const rest = data.slice("v13:dnsb:".length);
+    const parts = rest.split(":");
+    const kind = parts[0] as "master" | "white" | "slip";
+    const deploymentId = parts[1] ?? "";
+    const action = parts[2] ?? "";
+    const principal = botPrincipal(tenantId, telegramUserId, ctx.displayName);
+    try {
+      if (action === "cf" && kind === "master") {
+        await answerCallback(env, queryId, "ثبت SVCB…");
+        const name = await publishMasterSvcb(env, tenantId, telegramUserId, deploymentId);
+        await sendView(env, chatId, { text: `☁️ رکورد SVCB در <code>${escapeHtml(name)}</code> ثبت/به‌روز شد؛ انتشار DNS چند دقیقه طول می‌کشد.`, keyboard: omniBackMenuKeyboard(), html: true });
+      } else if (action === "cf" && kind === "white") {
+        await answerCallback(env, queryId, "انتشار لیست سفید…");
+        const winners = await directRaceDomains(env);
+        const domains = [...new Set([...winners, "aparat.com", "digikala.com", "bale.ai"])].slice(0, 40);
+        const published = await publishWhiteList(env, tenantId, telegramUserId, deploymentId, domains);
+        const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
+        const snippet = [
+          "🛡️ کانفیگ sing-box (مسیر لیست سفید روی DoH خودتان):",
+          `<code>{"type":"https","tag":"doh-own","server":"${escapeHtml(deployment.worker_hostname)}","server_port":443,"path":"/dns-query?k=&lt;KEY&gt;"}</code>`,
+          `به‌همراه rule: domain_suffix برای دامنه‌های لیست → outbound direct یا doh-own.`,
+          `TXTهای منتشرشده: ${published} رکورد خواندنی در zone شما.`,
+        ].join("\n");
+        await sendView(env, chatId, { text: snippet, keyboard: omniBackMenuKeyboard(), html: true, protect: true });
+      } else if (action === "url" && kind === "master") {
+        await answerCallback(env, queryId, "کانفیگ Master DNS");
+        const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
+        const lines = [
+          "🔑 <b>Master DNS شما</b> (محافظ‌شده؛ بعد از کپی حذفش کنید):",
+          `DoH: <code>https://${escapeHtml(deployment.worker_hostname)}/dns-query?k=&lt;KEY&gt;</code>`,
+          "کلید k = همان کلید اشتراکِ پیام محافظ‌شدهٔ «🔗 اشتراک‌ها»؛ اگر ندارید با «🔁 چرخش اشتراک» کلید تازه بگیرید.",
+          "sing-box dns server:",
+          `<code>{"type":"https","tag":"doh-own","server":"${escapeHtml(deployment.worker_hostname)}","server_port":443,"path":"/dns-query?k=&lt;KEY&gt;"}</code>`,
+          "Clash:",
+          `<code>nameserver: ['https://${escapeHtml(deployment.worker_hostname)}/dns-query?k=&lt;KEY&gt;#PROXY']</code>`,
+          "اندروید (اپ‌های DoH): همین URL را در فیلد server بگذارید؛ Private DNS سیستمی DoT است و پشتیبانی نمی‌شود — صادقانه.",
+        ].join("\n");
+        await sendView(env, chatId, {
+          text: lines,
+          keyboard: { inline_keyboard: [[{ text: "🧨 حذف این پیام", callback_data: "v13:delmsg" }], [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }]] },
+          html: true,
+          protect: true,
+        });
+      } else if (action === "dom" && kind === "white") {
+        const flow: PanelFlow = { flow: "white", step: FLOW_STEP_WHITE_DOMAINS, data: { deployment: deploymentId } };
+        await savePanelFlow(env, telegramUserId, flow);
+        await answerCallback(env, queryId, "لیست را بفرستید");
+        await edit({ text: flowPrompt(flow), keyboard: panelFlowKeyboard(), html: true });
+        return true;
+      } else if (action === "on" && kind === "slip") {
+        await answerCallback(env, queryId, "در حال ساخت delegation…");
+        await enableDnsTunnel(env, principal, deploymentId);
+      } else {
+        await answerCallback(env, queryId, "سازندهٔ کانفیگ");
+      }
+      await edit(await renderBuilderCard(env, tenantId, deploymentId, kind));
+      return true;
+    } catch (error) {
+      await showCallbackError(env, chatId, tenantId, telegramUserId, error);
+      return true;
+    }
+  }
+
   // --- V13.5 net-intel hub (one parent key, six dedicated keys inside) ---
   if (data === "v13:intel") {
     await answerCallback(env, queryId, "هوش شبکه V13.5");
@@ -2045,6 +2334,41 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
           html: true,
         });
         return json({ ok: true });
+      }
+      if (flow.flow === "dnsrange") {
+        try {
+          const parsed = await addScanRange(env, tenant.id, text);
+          await clearPanelFlow(env, telegramUserId);
+          const view = await renderDnsScanView(env, tenant.id);
+          await sendView(env, message.chat.id, {
+            text: `✅ رنج <code>${escapeHtml(parsed.cidr)}</code> (${parsed.ips.length} آدرس) ثبت شد؛ اسکن شروع شد و هر ${DNS_SCAN_INTERVAL_MINUTES} دقیقه تکرار می‌شود.`,
+            keyboard: panelFlowKeyboard(),
+            html: true,
+          });
+          return sendRendered(message.chat.id, view);
+        } catch (error) {
+          const reason = faErrorMessage(error) ?? "رنج معتبر نیست؛ مثال: 178.22.122.0/24";
+          return webhookSend(message.chat.id, `⚠️ ${reason}`, panelFlowKeyboard());
+        }
+      }
+      if (flow.flow === "white") {
+        const domains = text.split(/[،,\s]+/u).filter((part) => part.length > 0).slice(0, 40);
+        if (domains.length === 0) return webhookSend(message.chat.id, flowPrompt(flow), panelFlowKeyboard());
+        const deploymentId = flow.data["deployment"] ?? "";
+        try {
+          const published = await publishWhiteList(env, tenant.id, telegramUserId, deploymentId, domains);
+          await clearPanelFlow(env, telegramUserId);
+          await sendView(env, message.chat.id, {
+            text: `🛡️ ${published} رکورد TXT لیست سفید در zone شما منتشر شد؛ دامنه‌ها: <code>${escapeHtml(domains.join("، "))}</code>`,
+            keyboard: omniBackMenuKeyboard(),
+            html: true,
+          });
+          return sendRendered(message.chat.id, await renderBuilderCard(env, tenant.id, deploymentId, "white"));
+        } catch (error) {
+          await clearPanelFlow(env, telegramUserId);
+          const reason = faErrorMessage(error) ?? "انتشار ناموفق بود؛ اتصال Cloudflare را بررسی کنید.";
+          return webhookSend(message.chat.id, `⚠️ ${reason}`, omniMainMenuKeyboard());
+        }
       }
       const result = await processPanelFlowText(env, telegramUserId, tenant.id, flow, text);
       const followUp = result.followUp === "clean-ip"

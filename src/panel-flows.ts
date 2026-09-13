@@ -14,7 +14,7 @@ import type { Env, TelegramInlineKeyboard } from "./types";
 
 export const PANEL_FLOW_TTL_SECONDS = 900;
 
-export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel";
+export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel" | "dnsrange" | "white";
 
 export const FLOW_STEP_RUM_PING = "rum:ping";
 export const FLOW_STEP_RUM_LOSS = "rum:loss";
@@ -84,7 +84,28 @@ export async function clearPanelFlow(env: Env, telegramUserId: string): Promise<
   await env.DB.prepare("DELETE FROM telegram_flows WHERE telegram_user_id = ?").bind(telegramUserId).run();
 }
 
+export const FLOW_STEP_DNS_RANGE = "dnsrange:cidr";
+export const FLOW_STEP_WHITE_DOMAINS = "white:domains";
+
 export function flowPrompt(flow: PanelFlow): string {
+  if (flow.flow === "dnsrange") {
+    return [
+      "🔎 <b>رنج اسکن DNS سالم</b>",
+      "",
+      "یک IPv4 تکی یا CIDR بین /24 تا /32 بفرستید (حداکثر ۲۵۶ آدرس).",
+      "مثال: 178.22.122.0/24 یا 1.1.1.1",
+      "اسکن هر ۳۰ دقیقه خودکار تکرار می‌شود و یافته‌های تازه روی کارت می‌نشیند.",
+    ].join("\n");
+  }
+  if (flow.flow === "white") {
+    return [
+      "🛡️ <b>دامنه‌های لیست سفید White DNS</b>",
+      "",
+      "دامنه‌ها را با ویرگول جدا بفرستید (حداکثر ۴۰ عدد). این لیست به‌صورت رکورد TXT خواندنی",
+      "در zone شما منتشر می‌شود و در کانفیگ، مسیر این دامنه‌ها روی DoH خودتان می‌افتد.",
+      "مثال: aparat.com,digikala.com",
+    ].join("\n");
+  }
   if (BUTTON_ONLY_STEPS.includes(flow.step)) {
     return "لطفاً با دکمه‌هایی که ربات فرستاده انتخاب کنید 👇 (این قدم با متن آزاد پاسخ داده نمی‌شود)";
   }

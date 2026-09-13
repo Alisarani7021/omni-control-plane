@@ -20,6 +20,7 @@ import {
 } from "./domestic-race";
 import { buildRuleSet, currentIrRanges, purgeOldRirSnapshots, refreshGeoipIr } from "./geoip-ir";
 import { purgeExpiredEdgeProbes, runEdgeProbes } from "./net-mode";
+import { purgeOldDnsScans, scanDueRanges } from "./dns-center";
 import { enableDnsTunnel } from "./dns-tunnel";
 import { queueSleeperCommand, publishSleeperBeacon, setDeploymentRole } from "./sleeper";
 import type { SleeperCommand } from "./sleeper";
@@ -329,6 +330,10 @@ export default {
     if (probed > 0) console.log("edge_probes_run", { count: probed });
     const rir = await refreshGeoipIr(env);
     if (rir.updated) console.log("rir_snapshot_refreshed", { added: rir.added, removed: rir.removed, sha256: rir.sha256 });
+    const scanned = await scanDueRanges(env);
+    if (scanned > 0) console.log("dns_center_scanned", { count: scanned });
+    const dnsPurged = await purgeOldDnsScans(env);
+    if (dnsPurged > 0) console.log("dns_scans_purged", { count: dnsPurged });
     const pruned = await purgeOldRirSnapshots(env);
     if (pruned > 0) console.log("rir_snapshots_pruned", { count: pruned });
   },

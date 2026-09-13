@@ -196,6 +196,35 @@ export async function upsertTxtRecord(
   return created.id;
 }
 
+/** Upsert any simple record type (TXT/SVCB/CNAME/…) by exact name. */
+export async function upsertDnsRecord(
+  auth: CloudflareAuth,
+  zoneId: string,
+  type: string,
+  name: string,
+  content: string,
+  ttl = 300,
+): Promise<string> {
+  const records = await cloudflareApi<Array<{ id: string }>>(
+    auth,
+    `/zones/${zoneId}/dns_records?type=${encodeURIComponent(type)}&name=${encodeURIComponent(name)}&per_page=10`,
+  );
+  const payload = JSON.stringify({ type, name, content, ttl, proxied: false });
+  const existing = records[0];
+  if (existing) {
+    const updated = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records/${existing.id}`, {
+      method: "PUT",
+      body: payload,
+    });
+    return updated.id;
+  }
+  const created = await cloudflareApi<{ id: string }>(auth, `/zones/${zoneId}/dns_records`, {
+    method: "POST",
+    body: payload,
+  });
+  return created.id;
+}
+
 export async function deleteTxtRecords(auth: CloudflareAuth, zoneId: string, name: string): Promise<number> {
   const records = await cloudflareApi<Array<{ id: string }>>(
     auth,
