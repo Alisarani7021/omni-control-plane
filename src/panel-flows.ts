@@ -14,7 +14,7 @@ import type { Env, TelegramInlineKeyboard } from "./types";
 
 export const PANEL_FLOW_TTL_SECONDS = 900;
 
-export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel" | "dnsrange" | "white";
+export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel" | "dnsrange" | "white" | "slipcfg";
 
 export const FLOW_STEP_RUM_PING = "rum:ping";
 export const FLOW_STEP_RUM_LOSS = "rum:loss";
@@ -48,7 +48,10 @@ export function panelFlowKeyboard(): TelegramInlineKeyboard {
 }
 
 function isFlowKind(value: string): value is PanelFlowKind {
-  return value === "rum" || value === "map" || value === "donate" || value === "pack" || value === "panel";
+  return (
+    value === "rum" || value === "map" || value === "donate" || value === "pack" || value === "panel" ||
+    value === "dnsrange" || value === "white" || value === "slipcfg"
+  );
 }
 
 export async function loadPanelFlow(env: Env, telegramUserId: string): Promise<PanelFlow | null> {
@@ -95,6 +98,15 @@ export function flowPrompt(flow: PanelFlow): string {
       "یک IPv4 تکی یا CIDR بین /24 تا /32 بفرستید (حداکثر ۲۵۶ آدرس).",
       "مثال: 178.22.122.0/24 یا 1.1.1.1",
       "اسکن هر ۳۰ دقیقه خودکار تکرار می‌شود و یافته‌های تازه روی کارت می‌نشیند.",
+    ].join("\n");
+  }
+  if (flow.flow === "slipcfg") {
+    return [
+      "🌊 <b>کانفیگ Slipstream</b>",
+      "",
+      "در یک خط بفرستید: «دامنهٔ تونل  کلید عمومی  MTU» (MTU اختیاری، پیش‌فرض 1180).",
+      "مثال: t.example.com 9d8f7c6b5a4f… 1180",
+      "خروجی: خط slipnet:// آمادهٔ paste در اپ SlipNet.",
     ].join("\n");
   }
   if (flow.flow === "white") {

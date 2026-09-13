@@ -54,23 +54,12 @@ import {
   addScanRange,
   DNS_SCAN_INTERVAL_MINUTES,
   healthyResolvers,
-  masterDnsSvcbContent,
   scanRangeStatus,
   logDnsCenterAction,
 } from "./dns-center";
-import { poisonLine, poisonSummary, mtuSuggestion } from "./dns-poison";
-import { dnsTunnelCard, enableDnsTunnel, slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
-import { latestRirSnapshot, rirCardLine, RIR_IR_URL } from "./geoip-ir";
-import { NET_MODE_LABELS, netModeForDeployment } from "./net-mode";
-import {
-  beaconRecordName,
-  pendingSleeperCommand,
-  publishSleeperBeacon,
-  queueSleeperCommand,
-  setDeploymentRole,
-  sleeperCard,
-  type SleeperCommand,
-} from "./sleeper";
+import { poisonLine, poisonSummary } from "./dns-poison";
+import { slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
+import { latestRirSnapshot, rirCardLine } from "./geoip-ir";
 import { upsertDnsRecord } from "./cloudflare-api";
 import { clearWhiteHoleDrop, latestWhiteHoleDrop, publishWhiteHoleDrop, whiteHoleReadCommands, whiteHoleText } from "./whitehole";
 import {
@@ -130,8 +119,8 @@ import {
   sha256,
 } from "./security";
 import type {
-  DeploymentRow,
   Env,
+  SessionPrincipal,
   TelegramCallbackQuery,
   TelegramFrom,
   TelegramInlineKeyboard,
@@ -273,7 +262,6 @@ const MENU_ROWS: TelegramInlineKeyboard["inline_keyboard"] = [
   ],
   // V13.5 net-intel: ONE dedicated parent key; pressing it opens the hub with
   // the six feature keys. Never mixed into the pre-V13.5 keyboards.
-  [{ text: "🧠 هوش شبکه V13.5", callback_data: "v13:intel" }],
 ];
 
 /* The locked private environment keeps only the tenant-wide management rows. */
@@ -1032,7 +1020,7 @@ function renderDnsTestView(env: Env, isp?: string, city?: string): RenderedView 
       keyboard: {
         inline_keyboard: [
           ...chunkButtons(MAP_ISPS, 2, (item) => ({ text: item, callback_data: `v13:dnstest:isp:${item}` })),
-          [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }],
+          [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
           ...homeRow(),
         ],
       },
@@ -1046,7 +1034,7 @@ function renderDnsTestView(env: Env, isp?: string, city?: string): RenderedView 
         inline_keyboard: [
           ...chunkButtons(DNSTEST_CITIES, 2, (item) => ({ text: item, callback_data: `v13:dnstest:run:${isp}:${item}` })),
           [{ text: "↩️ تغییر اپراتور", callback_data: "v13:dnstest" }],
-          [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }],
+          [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
           ...homeRow(),
         ],
       },
@@ -1069,7 +1057,7 @@ function renderDnsTestView(env: Env, isp?: string, city?: string): RenderedView 
           { text: "↩️ تغییر شهر", callback_data: `v13:dnstest:isp:${isp}` },
           { text: "↩️ تغییر اپراتور", callback_data: "v13:dnstest" },
         ],
-        [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }],
+        [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
         ...homeRow(),
       ],
     },
@@ -1084,32 +1072,6 @@ function renderDnsTestView(env: Env, isp?: string, city?: string): RenderedView 
 // ---------------------------------------------------------------------------
 // V13.5 net-intel standalone views — one parent key opens this hub; each
 // feature owns its dedicated key, its own card and a full how-to-run guide.
-// ---------------------------------------------------------------------------
-
-function intelHubView(): RenderedView {
-  return {
-    text: [
-      "🧠 <b>هوش شبکه V13.5</b> — پنج قابلیت مستقل، هرکدام با کلید و کارت و راهنمای اجرای خودش؛",
-      "بخش DNS (تست مسمومیت، اسکن رنج، سازنده‌ها) کاملاً جدا در «🌐 مرکز DNS» زندگی می‌کند.",
-      "همهٔ اعداد از اندازه‌گیری واقعی می‌آیند: پروب لبهٔ Worker (cron هر ۵ دقیقه)، گزارش ایجنت نود، و گزارش‌های crowd روی سرورهای خود کاربران.",
-      "اگر اندازه‌گیری نباشد کارت صادقانه می‌گوید «داده‌ای نیست» — هیچ عددی جعل نمی‌شود.",
-    ].join("\n"),
-    keyboard: {
-      inline_keyboard: [
-        [{ text: "🧭 وضعیت شبکه", callback_data: "v13:netmode" }],
-        [{ text: "🇮🇷 رنج‌های ملی", callback_data: "v13:rir" }],
-        [{ text: "🛰️ تونل DNS", callback_data: "v13:tun" }],
-        [{ text: "🏘️ مستقیم ملی", callback_data: "v13:race" }],
-        [{ text: "😴 خواب‌نت", callback_data: "v13:slp" }],
-        ...homeRow(),
-      ],
-    },
-    html: true,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// مرکز DNS — independent DNS center: healthy-resolver discovery + builders.
 // ---------------------------------------------------------------------------
 
 function dnsCenterKeyboard(): TelegramInlineKeyboard {
@@ -1179,24 +1141,30 @@ async function renderDnsScanView(env: Env, tenantId: string): Promise<RenderedVi
   };
 }
 
-async function renderBuilderPicker(env: Env, tenantId: string, kind: "master" | "white" | "slip"): Promise<RenderedView> {
-  const rows = await env.DB.prepare(
-    "SELECT id, worker_hostname, status FROM deployments WHERE tenant_id = ? AND status NOT IN ('revoked', 'revoking') ORDER BY created_at DESC",
-  )
-    .bind(tenantId)
-    .all<{ id: string; worker_hostname: string; status: string }>();
-  const titles = { master: "🛠️ Master DNS — کدام استقرار؟", white: "🛡️ White DNS — کدام استقرار؟", slip: "🌊 Slipstream — کدام استقرار؟" };
-  if (rows.results.length === 0) {
-    return { text: `${titles[kind]}\nهنوز استقرار فعالی ندارید.`, keyboard: { inline_keyboard: [...homeRow()] }, html: false };
+async function renderBuilderPicker(
+  env: Env,
+  principal: SessionPrincipal,
+  kind: "master" | "white" | "slip",
+): Promise<RenderedView> {
+  if (kind === "slip") return renderBuilderCard(env, principal, null, kind);
+  const connections = await botListConnections(env, principal);
+  const title = kind === "master" ? "🛠️ Master DNS — روی کدام اتصال/zone؟" : "🛡️ White DNS — روی کدام اتصال/zone؟";
+  if (connections.length === 0) {
+    return {
+      text: `${title}\nهیچ اتصال Cloudflare ثبت نشده؛ اتصال فقط از فرم امن پنل ساخته می‌شود (هرگز در چت).`,
+      keyboard: { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] },
+      html: false,
+    };
   }
-  const only = rows.results.length === 1 ? rows.results[0] : undefined;
-  if (only) return renderBuilderCard(env, tenantId, only.id, kind);
   return {
-    text: titles[kind],
+    text: title,
     keyboard: {
       inline_keyboard: [
-        ...rows.results.map((row) => [
-          { text: `${row.worker_hostname} · ${row.status}`, callback_data: `v13:dnsb:${kind}:${row.id}` },
+        ...connections.map((connection) => [
+          {
+            text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40),
+            callback_data: `v13:dnsb:${kind}:${connection.id}`,
+          },
         ]),
         [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
         ...homeRow(),
@@ -1206,259 +1174,94 @@ async function renderBuilderPicker(env: Env, tenantId: string, kind: "master" | 
   };
 }
 
-async function renderBuilderCard(env: Env, tenantId: string, deploymentId: string, kind: "master" | "white" | "slip"): Promise<RenderedView> {
-  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
-  if (!deployment) return { text: "استقرار پیدا نشد.", keyboard: omniBackMenuKeyboard(), html: false };
+async function renderBuilderCard(
+  env: Env,
+  principal: SessionPrincipal,
+  connectionId: string | null,
+  kind: "master" | "white" | "slip",
+): Promise<RenderedView> {
   const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
   let text = "";
-  if (kind === "master") {
+  if (kind === "slip") {
     text = [
-      "🛠️ <b>Master DNS — رزولور DoH اختصاصی خودتان</b>",
-      `روی دامنهٔ Worker خودتان آماده است: <code>https://${escapeHtml(deployment.worker_hostname)}/dns-query</code>`,
-      "اسپلیت قطعی: دامنه‌های ملی → رزولور ملی، بقیه → 1.1.1.1؛ فقط A/AAAA/TXT؛ یک پاسخ cache؛ سقف ساعتی.",
-      "کلید k همان کلید اشتراک شماست (فقط در پیام محافظ‌شدهٔ اشتراک‌ها نمایش داده می‌شود).",
-      "با دکمهٔ Cloudflare یک رکورد SVCB سبک RFC 9462 در zone شما ثبت می‌شود تا کلاینت‌ها رزولور خودتان را خودکار کشف کنند.",
+      "🌊 <b>Slipstream — سازندهٔ کانفیگ کلاینت</b>",
+      "اینجا هیچ‌چیز به استقرارهای V13 گره خورده نیست: دامنهٔ تونل و کلید عمومی نود را می‌فرستید،",
+      "خط slipnet:// آماده ساخته می‌شود و راهنمای paste در اپ SlipNet/Slipstream می‌آید.",
+      "کلید خصوصی هرگز از VPS بیرون نمی‌رود؛ فقط کلید عمومی وارد این بخش می‌شود.",
       "",
-      "نحوهٔ اجرا: ۱) دکمهٔ «URL و کانفیگ‌ها» → پیام محافظ‌شده با خط آمادهٔ sing-box/Clash. ۲) دکمهٔ Cloudflare → ثبت SVCB. ۳) در کلاینت، DoH خودتان را به‌عنوان resolver اصلی بگذارید.",
+      "نحوهٔ اجرا: ۱) «✍️ دامنه و کلید» را بزنید. ۲) در یک خط: «دامنه کلید عمومی [MTU]». ۳) خروجی را در اپ paste کنید. ۴) مهر سلامت: پرسش TXT روی همان دامنه.",
     ].join("\n");
-    rows.push([{ text: "🔑 URL و کانفیگ‌ها (پیام محافظ‌شده)", callback_data: `v13:dnsb:master:${deployment.id}:url` }]);
-    rows.push([{ text: "☁️ ثبت رکورد SVCB در Cloudflare", callback_data: `v13:dnsb:master:${deployment.id}:cf` }]);
-  } else if (kind === "white") {
-    const direct = await directRaceDomains(env);
-    text = [
-      "🛡️ <b>White DNS — لیست سفید شخصی روی zone خودتان</b>",
-      "لیست سفید پیش‌فرض: برنده‌های مسابقهٔ «مستقیم» + دامنه‌های ملی پروفیل.",
-      direct.length > 0 ? `فعلاً: ${direct.slice(0, 8).map((domain) => `<code>${escapeHtml(domain)}</code>`).join("، ")}` : "فعلاً برندهٔ مستقیمی نداریم؛ لیست با دامنه‌های ملی پر می‌شود.",
-      "با دکمهٔ «دامنه‌های من» لیست دلخواه بفرستید؛ با دکمهٔ Cloudflare لیست به‌صورت TXTهای خواندنی (_white1…) در zone شما منتشر می‌شود و کانفیگ sing-box مسیر همین دامنه‌ها را روی DoH خودتان می‌اندازد.",
-      "",
-      "نحوهٔ اجرا: ۱) لیست را بفرستید. ۲) انتشار TXT. ۳) کانفیگ نمایش‌داده‌شده را در کلاینت بگذارید؛ نود/ایجنت هم می‌تواند لیست را خواندنی بخواند.",
-    ].join("\n");
-    rows.push([{ text: "✍️ دامنه‌های من", callback_data: `v13:dnsb:white:${deployment.id}:dom` }]);
-    rows.push([{ text: "☁️ انتشار TXT + کانفیگ", callback_data: `v13:dnsb:white:${deployment.id}:cf` }]);
+    rows.push([{ text: "✍️ دامنه و کلید", callback_data: "v13:dnsb:slip:dom" }]);
   } else {
-    const hasTunnel = deployment.dns_tunnel_enabled === 1;
-    const uri = deployment.dnstt_public_key && deployment.tunnel_hostname
-      ? slipnetUri(deployment.tunnel_hostname, deployment.dnstt_public_key, deployment.tunnel_mtu ?? TUNNEL_DEFAULT_MTU - 52)
-      : null;
-    text = [
-      "🌊 <b>Slipstream — کلاینت QUIC-over-DNS</b>",
-      hasTunnel
-        ? "delegation فعال است؛ کلید عمومی نود موجود است."
-        : "هنوز delegation فعال نیست؛ اول با دکمهٔ پایین NS رکورد t را بسازید و بعد بوت‌استرپ جدید را روی VPS اجرا کنید.",
-      uri ? `خط آمادهٔ اپ: <code>${escapeHtml(uri)}</code>` : "پس از نصب بوت‌استرپ، خط slipnet:// همین‌جا ساخته می‌شود.",
-      "اسپکی پین گواهی Slipstream در کارت تونل نمایش داده می‌شود؛ در اپ SlipNet فقط همین خط را paste کنید.",
-      "",
-      "نحوهٔ اجرا: ۱) فعال‌سازی delegation (اگر نیست). ۲) بوت‌استرپ روی VPS. ۳) paste خط در اپ. ۴) مهر سلامت: «🩺 TXT rtt».",
-    ].join("\n");
-    if (!hasTunnel) rows.push([{ text: "🛰️ فعال‌سازی delegation", callback_data: `v13:dnsb:slip:${deployment.id}:on` }]);
-    rows.push([{ text: "🔄 تازه‌سازی", callback_data: `v13:dnsb:slip:${deployment.id}` }]);
+    const connection = await getConnection(env, connectionId ?? "", principal.tenantId);
+    const zoneName = connection.resource_zone_name ?? "zone شما";
+    if (kind === "master") {
+      const healthy = await healthyResolvers(env, principal.tenantId);
+      const upstreams = healthy.slice(0, 3).map((item) => item.ip);
+      text = [
+        "🛠️ <b>Master DNS — رزولور شخصی روی zone خودتان</b>",
+        `اتصال: <code>${escapeHtml(zoneName)}</code> · دسترسی کامل DNS با توکن اسکوپ‌شدهٔ خودتان.`,
+        upstreams.length > 0
+          ? `بالادست‌های سالمِ اندازه‌گیری‌شده توسط اسکنر: ${upstreams.map((ip) => `<code>${escapeHtml(ip)}</code>`).join("، ")}`
+          : "هنوز بالادست سالمی از اسکنر نداریم؛ تا آن زمان فقط 1.1.1.1 به‌عنوان fallback در کانفیگ می‌نشیند (صادقانه).",
+        "دکمهٔ Cloudflare یک رکورد TXT خواندنی <code>_dns-master.<zone></code> می‌سازد که لیست بالادست‌های سالم را برای کلاینت‌هایتان منتشر می‌کند؛ دکمهٔ کانفیگ، sing-box/Clash آماده می‌دهد.",
+      ].join("\n");
+      rows.push([{ text: "🔑 کانفیگ‌ها (پیام محافظ‌شده)", callback_data: `v13:dnsb:master:${connection.id}:url` }]);
+      rows.push([{ text: "☁️ انتشار TXT کشف در Cloudflare", callback_data: `v13:dnsb:master:${connection.id}:cf` }]);
+    } else {
+      const direct = await directRaceDomains(env);
+      text = [
+        "🛡️ <b>White DNS — لیست سفید شخصی روی zone خودتان</b>",
+        `اتصال: <code>${escapeHtml(zoneName)}</code> · انتشار به‌صورت TXTهای خواندنی <code>_whiteN.<zone></code>.`,
+        direct.length > 0 ? `برنده‌های فعلی مسابقهٔ مستقیم: ${direct.slice(0, 8).map((domain) => `<code>${escapeHtml(domain)}</code>`).join("، ")}` : "هنوز برندهٔ مستقیمی نداریم؛ لیست با دامنه‌های ملی + ورودی شما پر می‌شود.",
+        "نحوهٔ اجرا: ۱) «✍️ دامنه‌های من» لیست را بفرستید. ۲) «☁️ انتشار» رکوردها را در zone خودتان می‌نویسد. ۳) کانفیگ sing-box مسیر همین دامنه‌ها را روی بالادست سالم می‌اندازد.",
+      ].join("\n");
+      rows.push([{ text: "✍️ دامنه‌های من", callback_data: `v13:dnsb:white:${connection.id}:dom` }]);
+      rows.push([{ text: "☁️ انتشار TXT + کانفیگ", callback_data: `v13:dnsb:white:${connection.id}:cf` }]);
+    }
   }
-  rows.push([{ text: "↩️ انتخاب استقرار دیگر", callback_data: `v13:dnsb:${kind}` }]);
+  rows.push([{ text: "↩️ اتصال/zone دیگر", callback_data: `v13:dnsb:${kind}` }]);
   rows.push([{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }]);
   rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
   return { text, keyboard: { inline_keyboard: rows }, html: true };
 }
 
-async function ownedDeploymentRowOrThrow(env: Env, tenantId: string, deploymentId: string): Promise<DeploymentRow> {
-  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
-  if (!deployment) throw new HttpError(404, "deployment_not_found", "Deployment not found");
-  return deployment;
-}
-
-async function publishMasterSvcb(env: Env, tenantId: string, telegramUserId: string, deploymentId: string): Promise<string> {
-  const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
-  const connection = await getConnection(env, deployment.oauth_connection_id, tenantId);
-  const zoneId = connection.resource_zone_id ?? deployment.zone_id;
-  const zoneName = connection.resource_zone_name ?? deployment.worker_hostname.split(".").slice(1).join(".");
+async function publishMasterDiscovery(env: Env, principal: SessionPrincipal, connectionId: string): Promise<{ name: string; count: number }> {
+  const healthy = await healthyResolvers(env, principal.tenantId);
+  if (healthy.length === 0) {
+    throw new HttpError(400, "invalid_input", "No healthy resolver found yet; run a range scan first");
+  }
+  const connection = await getConnection(env, connectionId, principal.tenantId);
+  const zoneName = connection.resource_zone_name ?? "";
   const auth = await getValidCloudflareAuth(env, connection);
-  const name = `_doh.${zoneName}`;
-  await upsertDnsRecord(auth, zoneId, "SVCB", name, masterDnsSvcbContent(deployment.worker_hostname), 300);
-  await logDnsCenterAction(env, tenantId, telegramUserId, "dns.master.svcb", deploymentId);
-  return name;
+  const name = `_dns-master.${zoneName}`;
+  const ips = healthy.slice(0, 6).map((item) => item.ip);
+  await upsertDnsRecord(auth, connection.resource_zone_id ?? "", "TXT", name, ips.join(","), 300);
+  await logDnsCenterAction(env, principal.tenantId, principal.telegramUserId, "dns.master.publish", connectionId);
+  return { name, count: ips.length };
 }
 
-async function publishWhiteList(env: Env, tenantId: string, telegramUserId: string, deploymentId: string, domains: string[]): Promise<number> {
-  const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
-  const connection = await getConnection(env, deployment.oauth_connection_id, tenantId);
-  const zoneId = connection.resource_zone_id ?? deployment.zone_id;
-  const zoneName = connection.resource_zone_name ?? deployment.worker_hostname.split(".").slice(1).join(".");
+async function publishWhiteList(
+  env: Env,
+  principal: SessionPrincipal,
+  connectionId: string,
+  domains: string[],
+): Promise<number> {
+  const connection = await getConnection(env, connectionId, principal.tenantId);
+  const zoneName = connection.resource_zone_name ?? "";
   const auth = await getValidCloudflareAuth(env, connection);
   const joined = domains.join(",");
   const chunks: string[] = [];
   for (let index = 0; index < joined.length; index += 240) chunks.push(joined.slice(index, index + 240));
   let published = 0;
   for (let index = 0; index < Math.max(chunks.length, 1); index += 1) {
-    await upsertDnsRecord(auth, zoneId, "TXT", `_white${index + 1}.${zoneName}`, chunks[index] ?? "", 300);
+    await upsertDnsRecord(auth, connection.resource_zone_id ?? "", "TXT", `_white${index + 1}.${zoneName}`, chunks[index] ?? "", 300);
     published += 1;
   }
-  await logDnsCenterAction(env, tenantId, telegramUserId, "dns.white.publish", deploymentId);
+  await logDnsCenterAction(env, principal.tenantId, principal.telegramUserId, "dns.white.publish", connectionId);
   return published;
 }
 
-async function renderNetModeView(env: Env, tenantId: string): Promise<RenderedView> {
-  const rows = await env.DB.prepare(
-    "SELECT id, worker_hostname, status FROM deployments WHERE tenant_id = ? ORDER BY created_at DESC",
-  )
-    .bind(tenantId)
-    .all<{ id: string; worker_hostname: string; status: string }>();
-  const lines = ["🧭 <b>وضعیت شبکه</b> — دو چشم مستقل: پروب لبهٔ Worker + گزارش داخلی نود."];
-  if (rows.results.length === 0) {
-    lines.push("هنوز استقرار فعالی ثبت نشده است؛ بدون اندازه‌گیری حدس نمی‌زنیم.");
-  }
-  for (const row of rows.results) {
-    const mode = await netModeForDeployment(env, row.id);
-    lines.push(`• <code>${escapeHtml(row.worker_hostname)}</code> (${escapeHtml(row.status)}) → ${NET_MODE_LABELS[mode]}`);
-  }
-  lines.push("منبع: edge_probes (cron هر ۵ دقیقه) و agent_reports. بدون داده = «بدون داده»، نه حدس.");
-  lines.push("نحوهٔ اجرا: چیزی اجرا نمی‌کنید؛ پروب‌ها خودکارند و این کارت فقط وضعیت واقعی هر استقرار را نشان می‌دهد.");
-  return {
-    text: lines.join("\n"),
-    keyboard: { inline_keyboard: [[{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()] },
-    html: true,
-  };
-}
-
-async function renderRirView(env: Env): Promise<RenderedView> {
-  const snapshot = await latestRirSnapshot(env);
-  const lines = [
-    "🇮🇷 <b>رنج‌های ملی (RIPE/IRNIC)</b>",
-    rirCardLine(snapshot),
-    snapshot
-      ? "diff روزانهٔ delegated-irnic-extended-latest با snapshot پیشین؛ نگهداری ۱۴ روز؛ rule-set عمومی در /api/v1/geoip-ir.json."
-      : "اولین snapshot با cron روزانه گرفته می‌شود؛ تا آن زمان هیچ عددی نمایش داده نمی‌شود.",
-    `منبع: <code>${RIR_IR_URL}</code>`,
-    "نحوهٔ اجرا: چیزی اجرا نمی‌کنید؛ cron روزانه snapshot می‌گیرد و diff روی همین کارت می‌نشیند. rule-set پروفیل‌ها خودکار از /api/v1/geoip-ir.json به‌روز می‌شود.",
-  ];
-  return {
-    text: lines.join("\n"),
-    keyboard: { inline_keyboard: [[{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()] },
-    html: true,
-  };
-}
-
-async function renderRaceView(env: Env): Promise<RenderedView> {
-  const [winners, direct] = await Promise.all([listRaceWinners(env), directRaceDomains(env)]);
-  const line = raceLine(winners);
-  const lines = [
-    "🏘️ <b>مستقیم داخل کشور</b> — مسابقهٔ واقعی «مستقیم در برابر تونل» برای هر دامنه.",
-    line ?? "هنوز گزارش مسابقه‌ای ثبت نشده؛ ایجنتِ بوت‌استرپ جدید یک‌بار اندازه‌گیری می‌کند و می‌فرستد.",
-    direct.length > 0
-      ? `برندهٔ قطعی مستقیم (حداقل ۲ نمونه): ${direct.map((domain) => `<code>${escapeHtml(domain)}</code>`).join("، ")}`
-      : "هنوز دامنه‌ای با برد مستقیم قطعی نداریم.",
-    "برنده‌ها در rule-set «race-direct» پروفیل‌های sing-box اعمال می‌شوند؛ مقایسهٔ ms در کارت نقشه هم هست.",
-    "نحوهٔ اجرا: دستی چیزی نمی‌زنید؛ ایجنتِ بوت‌استرپ جدید یک‌بار مسابقهٔ مستقیم-در-برابر-تونل را per دامنه اندازه می‌گیرد و می‌فرستد؛ از اجرای بعدی بوت‌استرپ در پروفیل‌ها اعمال می‌شود.",
-  ];
-  return {
-    text: lines.join("\n"),
-    keyboard: { inline_keyboard: [[{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()] },
-    html: true,
-  };
-}
-
-async function renderPickerView(env: Env, tenantId: string, prefix: "tun" | "slp"): Promise<RenderedView> {
-  const rows = await env.DB.prepare(
-    "SELECT id, worker_hostname, status FROM deployments WHERE tenant_id = ? AND status NOT IN ('revoked', 'revoking') ORDER BY created_at DESC",
-  )
-    .bind(tenantId)
-    .all<{ id: string; worker_hostname: string; status: string }>();
-  const only = rows.results.length === 1 ? rows.results[0] : undefined;
-  if (only) {
-    return prefix === "tun"
-      ? renderTunnelView(env, tenantId, only.id)
-      : renderSleeperView(env, tenantId, only.id);
-  }
-  const title = prefix === "tun" ? "🛰️ تونل DNS — کدام استقرار؟" : "😴 خواب‌نت — کدام استقرار؟";
-  if (rows.results.length === 0) {
-    return {
-      text: `${title}\nهنوز استقرار فعالی ندارید؛ اول از «📁 دیپلوی‌های من» یک استقرار بسازید.`,
-      keyboard: { inline_keyboard: [...homeRow()] },
-      html: false,
-    };
-  }
-  const buttons = rows.results.map((row) => [
-    { text: `${row.worker_hostname} · ${row.status}`, callback_data: `v13:${prefix}:${row.id}` },
-  ]);
-  return {
-    text: title,
-    keyboard: {
-      inline_keyboard: [...buttons, [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()],
-    },
-    html: false,
-  };
-}
-
-async function ownedDeploymentRow(env: Env, tenantId: string, deploymentId: string): Promise<DeploymentRow | null> {
-  return env.DB.prepare("SELECT * FROM deployments WHERE id = ? AND tenant_id = ?")
-    .bind(deploymentId, tenantId).first<DeploymentRow>();
-}
-
-async function renderTunnelView(env: Env, tenantId: string, deploymentId: string): Promise<RenderedView> {
-  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
-  if (!deployment) return { text: "استقرار پیدا نشد.", keyboard: omniBackMenuKeyboard(), html: false };
-  const report = await env.DB.prepare(
-    "SELECT tunnel_txt_rtt_ms, tunnel_status FROM agent_reports WHERE deployment_id = ? ORDER BY reported_at DESC LIMIT 1",
-  ).bind(deploymentId).first<{ tunnel_txt_rtt_ms: number | null; tunnel_status: string | null }>();
-  const suggestion = await mtuSuggestion(env);
-  const text = [
-    dnsTunnelCard({
-      deployment,
-      mtuSuggestion: suggestion?.mtu ?? null,
-      tunnelTxtRttMs: report?.tunnel_txt_rtt_ms ?? null,
-      tunnelStatus: report?.tunnel_status ?? null,
-    }),
-    "",
-    "نحوهٔ اجرا، قدم‌به‌قدم:",
-    "۱) دکمهٔ «فعال‌سازی delegation» بزنید تا رکورد NS برای زیردامنهٔ t (مثل t.example.com) با همان Token اسکوپ‌شدهٔ Cloudflare خودتان ساخته شود (یک فراخوانی، بدون secret جدید).",
-    "۲) از «📦 جزئیات استقرار» دستور بوت‌استرپ جدید بگیرید و روی VPS اجرا کنید؛ واحدهای dnstt-server و slipstream-server نصب و کلیدها فقط روی خود VPS ساخته می‌شوند.",
-    "۳) خط slipnet:// همین کارت را کپی کنید و در اپ SlipNet در فیلد «import / paste configuration» بچسبانید؛ برای Slipstream فقط همان زیردامنهٔ t کافی است.",
-    "۴) اثبات زنده‌بودن: «🩺 TXT rtt» روی کارت سلامت نودها (round-trip رکورد TXT، ≤۲ ثانیه). MTU هم با پنج پروب ۵۱۲ تا ۱۴۰۰ خودکار اندازه گرفته می‌شود.",
-  ].join("\n");
-  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
-  if (deployment.dns_tunnel_enabled !== 1) {
-    rows.push([{ text: "🛰️ فعال‌سازی delegation (NS+glue)", callback_data: `v13:tun:${deployment.id}:on` }]);
-  }
-  rows.push([
-    { text: "🔄 تازه‌سازی", callback_data: `v13:tun:${deployment.id}` },
-    { text: "📦 جزئیات استقرار", callback_data: `v13:dep:${deployment.id}` },
-  ]);
-  rows.push([{ text: "😴 خواب‌نت", callback_data: `v13:slp:${deployment.id}` }]);
-  rows.push([{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }]);
-  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
-  return { text, keyboard: { inline_keyboard: rows }, html: true };
-}
-
-async function renderSleeperView(env: Env, tenantId: string, deploymentId: string): Promise<RenderedView> {
-  const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
-  if (!deployment) return { text: "استقرار پیدا نشد.", keyboard: omniBackMenuKeyboard(), html: false };
-  const pending = await pendingSleeperCommand(env, deployment.id);
-  const text = [
-    sleeperCard({ deployment, pending, beaconName: beaconRecordName(deployment) }),
-    "",
-    "نحوهٔ اجرا، قدم‌به‌قدم:",
-    "۱) فقط روی سرور خودتان و با اعتبارنامهٔ خودتان: دکمهٔ «فعال‌سازی sleeper (با پذیرش قیدها)» را بزنید؛ بدون پذیرش، arm نمی‌شود.",
-    "۲) نود ساکت می‌شود و فقط در پنجرهٔ روزانهٔ خودش (با jitter ±۹ دقیقه) یک beacon خواندنی TXT از دامنهٔ خودش می‌خواند؛ هیچ نوشتنی بیرون نمی‌رود.",
-    "۳) دکمهٔ ⛔ بیدارباش/گزارش فوری روی همین کارت است و لاگ کامل محلی در /var/lib/v13-agent/sleeper.log برای بازرسی شماست.",
-    "۴) «بازگشت به استاندارد» خواب را تمام می‌کند و گزارش دوره‌ای برمی‌گردد.",
-  ].join("\n");
-  const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
-  if (deployment.role !== "sleeper") {
-    rows.push([{ text: "😴 فعال‌سازی sleeper (با پذیرش قیدها)", callback_data: `v13:slp:${deployment.id}:consent` }]);
-  } else {
-    rows.push([
-      { text: " بیدارباش فوری (wake)", callback_data: `v13:slp:${deployment.id}:cmd:wake` },
-      { text: "📣 گزارش فوری", callback_data: `v13:slp:${deployment.id}:cmd:report` },
-    ]);
-    rows.push([{ text: "📡 انتشار beacon", callback_data: `v13:slp:${deployment.id}:beacon` }]);
-    rows.push([{ text: "🌞 بازگشت به استاندارد", callback_data: `v13:slp:${deployment.id}:std` }]);
-  }
-  rows.push([
-    { text: "🔄 تازه‌سازی", callback_data: `v13:slp:${deployment.id}` },
-    { text: "🛰️ تونل DNS", callback_data: `v13:tun:${deployment.id}` },
-  ]);
-  rows.push([{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }]);
-  rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
-  return { text, keyboard: { inline_keyboard: rows }, html: true };
-}
 
 function mapStepKeyboard(items: readonly string[], prefix: string, labels?: Record<string, string>): TelegramInlineKeyboard {
   return {
@@ -1972,49 +1775,58 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     await edit({ text: flowPrompt(flow), keyboard: panelFlowKeyboard(), html: true });
     return true;
   }
+  if (data === "v13:dnstest") {
+    await answerCallback(env, queryId, "تست مسمومیت DNS");
+    await edit(renderDnsTestView(env));
+    return true;
+  }
+  if (data.startsWith("v13:dnstest:isp:")) {
+    const isp = decodeURIComponent(data.slice("v13:dnstest:isp:".length));
+    await answerCallback(env, queryId, isp);
+    await edit(renderDnsTestView(env, isp));
+    return true;
+  }
+  if (data.startsWith("v13:dnstest:run:")) {
+    const [isp, city] = data.slice("v13:dnstest:run:".length).split(":");
+    await answerCallback(env, queryId, "فرمان آماده");
+    await edit(renderDnsTestView(env, decodeURIComponent(isp ?? ""), decodeURIComponent(city ?? "")));
+    return true;
+  }
   if (data === "v13:dnsb:master" || data === "v13:dnsb:white" || data === "v13:dnsb:slip") {
     const kind = data.slice("v13:dnsb:".length) as "master" | "white" | "slip";
     await answerCallback(env, queryId, "سازندهٔ کانفیگ");
-    await edit(await renderBuilderPicker(env, tenantId, kind));
+    await edit(await renderBuilderPicker(env, botPrincipal(tenantId, telegramUserId, ctx.displayName), kind));
     return true;
   }
   if (data.startsWith("v13:dnsb:")) {
-    const rest = data.slice("v13:dnsb:".length);
-    const parts = rest.split(":");
+    const parts = data.slice("v13:dnsb:".length).split(":");
     const kind = parts[0] as "master" | "white" | "slip";
-    const deploymentId = parts[1] ?? "";
+    const connectionId = parts[1] ?? "";
     const action = parts[2] ?? "";
     const principal = botPrincipal(tenantId, telegramUserId, ctx.displayName);
     try {
-      if (action === "cf" && kind === "master") {
-        await answerCallback(env, queryId, "ثبت SVCB…");
-        const name = await publishMasterSvcb(env, tenantId, telegramUserId, deploymentId);
-        await sendView(env, chatId, { text: `☁️ رکورد SVCB در <code>${escapeHtml(name)}</code> ثبت/به‌روز شد؛ انتشار DNS چند دقیقه طول می‌کشد.`, keyboard: omniBackMenuKeyboard(), html: true });
-      } else if (action === "cf" && kind === "white") {
-        await answerCallback(env, queryId, "انتشار لیست سفید…");
-        const winners = await directRaceDomains(env);
-        const domains = [...new Set([...winners, "aparat.com", "digikala.com", "bale.ai"])].slice(0, 40);
-        const published = await publishWhiteList(env, tenantId, telegramUserId, deploymentId, domains);
-        const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
-        const snippet = [
-          "🛡️ کانفیگ sing-box (مسیر لیست سفید روی DoH خودتان):",
-          `<code>{"type":"https","tag":"doh-own","server":"${escapeHtml(deployment.worker_hostname)}","server_port":443,"path":"/dns-query?k=&lt;KEY&gt;"}</code>`,
-          `به‌همراه rule: domain_suffix برای دامنه‌های لیست → outbound direct یا doh-own.`,
-          `TXTهای منتشرشده: ${published} رکورد خواندنی در zone شما.`,
-        ].join("\n");
-        await sendView(env, chatId, { text: snippet, keyboard: omniBackMenuKeyboard(), html: true, protect: true });
-      } else if (action === "url" && kind === "master") {
+      if (kind === "slip" && action === "dom") {
+        const flow: PanelFlow = { flow: "slipcfg", step: "slipcfg:line", data: {} };
+        await savePanelFlow(env, telegramUserId, flow);
+        await answerCallback(env, queryId, "یک خط: دامنه کلید MTU");
+        await edit({ text: flowPrompt(flow), keyboard: panelFlowKeyboard(), html: true });
+        return true;
+      }
+      if (kind === "master" && action === "url") {
         await answerCallback(env, queryId, "کانفیگ Master DNS");
-        const deployment = await ownedDeploymentRowOrThrow(env, tenantId, deploymentId);
+        const healthy = await healthyResolvers(env, tenantId);
+        const upstreams = healthy.slice(0, 3).map((item) => item.ip);
+        const servers = upstreams.length > 0 ? upstreams : ["1.1.1.1"];
         const lines = [
-          "🔑 <b>Master DNS شما</b> (محافظ‌شده؛ بعد از کپی حذفش کنید):",
-          `DoH: <code>https://${escapeHtml(deployment.worker_hostname)}/dns-query?k=&lt;KEY&gt;</code>`,
-          "کلید k = همان کلید اشتراکِ پیام محافظ‌شدهٔ «🔗 اشتراک‌ها»؛ اگر ندارید با «🔁 چرخش اشتراک» کلید تازه بگیرید.",
-          "sing-box dns server:",
-          `<code>{"type":"https","tag":"doh-own","server":"${escapeHtml(deployment.worker_hostname)}","server_port":443,"path":"/dns-query?k=&lt;KEY&gt;"}</code>`,
-          "Clash:",
-          `<code>nameserver: ['https://${escapeHtml(deployment.worker_hostname)}/dns-query?k=&lt;KEY&gt;#PROXY']</code>`,
-          "اندروید (اپ‌های DoH): همین URL را در فیلد server بگذارید؛ Private DNS سیستمی DoT است و پشتیبانی نمی‌شود — صادقانه.",
+          "🔑 <b>کانفیگ‌های Master DNS شما</b> (پیام محافظ‌شده؛ پس از کپی «🧨 حذف این پیام» را بزنید):",
+          upstreams.length > 0
+            ? "بالادست‌ها مستقیماً از نتایج اسکنر شما آمده‌اند:"
+            : "هنوز بالادست سالمی از اسکنر نداریم؛ فقط 1.1.1.1 نشسته (صادقانه، بدون دادهٔ جعلی).",
+          "sing-box — در dns.servers قرار دهید:",
+          `<code>${escapeHtml(JSON.stringify({ type: "udp", servers, strategy: "ipv4_only" }))}</code>`,
+          "Clash Meta:",
+          `<code>dns:\n  enable: true\n  nameserver: [${servers.join(", ")}]</code>`,
+          "راهنمای اجرا: ۱) بلوک بالا را در کانفیگ خود بگذارید. ۲) «☁️ انتشار TXT کشف» لیست سالم را در zone شما عمومی می‌کند تا بقیهٔ کلاینت‌ها همگام بمانند. ۳) مهر سلامت: در تست DNS همین رزولورها را بپرسید.",
         ].join("\n");
         await sendView(env, chatId, {
           text: lines,
@@ -2022,129 +1834,44 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
           html: true,
           protect: true,
         });
-      } else if (action === "dom" && kind === "white") {
-        const flow: PanelFlow = { flow: "white", step: FLOW_STEP_WHITE_DOMAINS, data: { deployment: deploymentId } };
+        return true;
+      }
+      if (kind === "master" && action === "cf") {
+        await answerCallback(env, queryId, "انتشار TXT کشف…");
+        const published = await publishMasterDiscovery(env, principal, connectionId);
+        await sendView(env, chatId, {
+          text: `☁️ رکورد TXT کشف در <code>${escapeHtml(published.name)}</code> ثبت/به‌روز شد (${published.count} بالادست سالم). انتشار چند دقیقه طول می‌کشد؛ مهر سلامت: در تست DNS همین نام را با نوع TXT بپرسید.`,
+          keyboard: omniBackMenuKeyboard(),
+          html: true,
+        });
+        return true;
+      }
+      if (kind === "white" && action === "cf") {
+        await answerCallback(env, queryId, "انتشار لیست سفید…");
+        const winners = await directRaceDomains(env);
+        const domains = [...new Set([...winners, "aparat.com", "digikala.com", "bale.ai"])].slice(0, 40);
+        const published = await publishWhiteList(env, principal, connectionId, domains);
+        const connection = await getConnection(env, connectionId, tenantId);
+        const healthy = await healthyResolvers(env, tenantId);
+        const upstream = healthy[0]?.ip ?? "1.1.1.1";
+        const snippet = [
+          "🛡️ کانفیگ sing-box (لیست سفید روی بالادست سالم — پیام محافظ‌شده):",
+          `<code>${escapeHtml(JSON.stringify({ type: "udp", tag: "doh-white", server: upstream }))}</code>`,
+          `rule: domain_suffix روی ${escapeHtml(domains.slice(0, 10).join("، "))}${domains.length > 10 ? " و بقیهٔ لیست منتشرشده" : ""} → outbound direct با resolver doh-white.`,
+          `TXTهای منتشرشده در zone خودتان: ${published} رکورد (نام‌ها: _white1.${escapeHtml(connection.resource_zone_name ?? "zone")} …).`,
+        ].join("\n");
+        await sendView(env, chatId, { text: snippet, keyboard: omniBackMenuKeyboard(), html: true, protect: true });
+        return true;
+      }
+      if (kind === "white" && action === "dom") {
+        const flow: PanelFlow = { flow: "white", step: FLOW_STEP_WHITE_DOMAINS, data: { connection: connectionId } };
         await savePanelFlow(env, telegramUserId, flow);
         await answerCallback(env, queryId, "لیست را بفرستید");
         await edit({ text: flowPrompt(flow), keyboard: panelFlowKeyboard(), html: true });
         return true;
-      } else if (action === "on" && kind === "slip") {
-        await answerCallback(env, queryId, "در حال ساخت delegation…");
-        await enableDnsTunnel(env, principal, deploymentId);
-      } else {
-        await answerCallback(env, queryId, "سازندهٔ کانفیگ");
       }
-      await edit(await renderBuilderCard(env, tenantId, deploymentId, kind));
-      return true;
-    } catch (error) {
-      await showCallbackError(env, chatId, tenantId, telegramUserId, error);
-      return true;
-    }
-  }
-
-  // --- V13.5 net-intel hub (one parent key, six dedicated keys inside) ---
-  if (data === "v13:intel") {
-    await answerCallback(env, queryId, "هوش شبکه V13.5");
-    await edit(intelHubView());
-    return true;
-  }
-
-  // --- V13.5 standalone net-intel keys (own card per feature) ---
-  if (data === "v13:netmode") {
-    await answerCallback(env, queryId, "وضعیت شبکه");
-    await edit(await renderNetModeView(env, tenantId));
-    return true;
-  }
-  if (data === "v13:rir") {
-    await answerCallback(env, queryId, "رنج‌های ملی");
-    await edit(await renderRirView(env));
-    return true;
-  }
-  if (data === "v13:race") {
-    await answerCallback(env, queryId, "مستقیم ملی");
-    await edit(await renderRaceView(env));
-    return true;
-  }
-  if (data === "v13:tun") {
-    await answerCallback(env, queryId, "تونل DNS");
-    await edit(await renderPickerView(env, tenantId, "tun"));
-    return true;
-  }
-  if (data === "v13:slp") {
-    await answerCallback(env, queryId, "خواب‌نت");
-    await edit(await renderPickerView(env, tenantId, "slp"));
-    return true;
-  }
-
-  // --- DNS poisoning self-test card + operator/city picker ---
-  if (data === "v13:dnstest") {
-    await answerCallback(env, queryId, "تست مسمومیت DNS");
-    await edit(renderDnsTestView(env));
-    return true;
-  }
-  if (data.startsWith("v13:dnstest:isp:")) {
-    const isp = data.slice("v13:dnstest:isp:".length);
-    await answerCallback(env, queryId, isp);
-    await edit(MAP_ISPS.includes(isp) ? renderDnsTestView(env, isp) : renderDnsTestView(env));
-    return true;
-  }
-  if (data.startsWith("v13:dnstest:run:")) {
-    const rest = data.slice("v13:dnstest:run:".length);
-    const sep = rest.indexOf(":");
-    const isp = sep === -1 ? rest : rest.slice(0, sep);
-    const city = sep === -1 ? "" : rest.slice(sep + 1);
-    await answerCallback(env, queryId, `${isp} · ${city}`);
-    await edit(
-      MAP_ISPS.includes(isp) && DNSTEST_CITIES.includes(city)
-        ? renderDnsTestView(env, isp, city)
-        : renderDnsTestView(env),
-    );
-    return true;
-  }
-
-  // --- DNS tunnel (slipnet/dnstt) ---
-  if (data.startsWith("v13:tun:")) {
-    const suffix = data.slice("v13:tun:".length);
-    const deploymentId = suffix.endsWith(":on") ? suffix.slice(0, -3) : suffix;
-    try {
-      if (suffix.endsWith(":on")) {
-        await answerCallback(env, queryId, "در حال ساخت delegation…");
-        await enableDnsTunnel(env, botPrincipal(tenantId, telegramUserId, ctx.displayName), deploymentId);
-      } else {
-        await answerCallback(env, queryId, "تونل DNS");
-      }
-      await edit(await renderTunnelView(env, tenantId, deploymentId));
-      return true;
-    } catch (error) {
-      await showCallbackError(env, chatId, tenantId, telegramUserId, error);
-      return true;
-    }
-  }
-
-  // --- Sleeper (خواب‌نت) ---
-  if (data.startsWith("v13:slp:")) {
-    const suffix = data.slice("v13:slp:".length);
-    const deploymentId = suffix.split(":")[0] ?? "";
-    const action = suffix.slice(deploymentId.length + 1);
-    const principal = botPrincipal(tenantId, telegramUserId, ctx.displayName);
-    try {
-      if (action === "consent") {
-        await answerCallback(env, queryId, "فعال‌سازی sleeper…");
-        await setDeploymentRole(env, principal, deploymentId, "sleeper", true);
-      } else if (action === "std") {
-        await answerCallback(env, queryId, "بازگشت به استاندارد…");
-        await setDeploymentRole(env, principal, deploymentId, "standard", false);
-      } else if (action === "beacon") {
-        await answerCallback(env, queryId, "انتشار beacon…");
-        await publishSleeperBeacon(env, principal, deploymentId);
-      } else if (action === "cmd:report" || action === "cmd:wake") {
-        const command: SleeperCommand = action === "cmd:wake" ? "wake" : "report-now";
-        await answerCallback(env, queryId, "صف‌شدن فرمان…");
-        await queueSleeperCommand(env, principal, deploymentId, command);
-      } else {
-        await answerCallback(env, queryId, "خواب‌نت");
-      }
-      await edit(await renderSleeperView(env, tenantId, deploymentId));
+      await answerCallback(env, queryId, "سازندهٔ کانفیگ");
+      await edit(await renderBuilderCard(env, principal, kind === "slip" ? null : connectionId, kind));
       return true;
     } catch (error) {
       await showCallbackError(env, chatId, tenantId, telegramUserId, error);
@@ -2353,22 +2080,57 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
       }
       if (flow.flow === "white") {
         const domains = text.split(/[،,\s]+/u).filter((part) => part.length > 0).slice(0, 40);
-        if (domains.length === 0) return webhookSend(message.chat.id, flowPrompt(flow), panelFlowKeyboard());
-        const deploymentId = flow.data["deployment"] ?? "";
+        const connectionId = flow.data["connection"] ?? "";
+        if (domains.length === 0 || connectionId.length === 0) {
+          return webhookSend(message.chat.id, "⚠️ هیچ دامنهٔ معتبری پیدا نشد یا اتصال انتخاب نشده؛ از «🛡️ White DNS» دوباره شروع کنید.", panelFlowKeyboard());
+        }
         try {
-          const published = await publishWhiteList(env, tenant.id, telegramUserId, deploymentId, domains);
+          const principal = botPrincipal(tenant.id, telegramUserId, tenant.displayName);
+          const published = await publishWhiteList(env, principal, connectionId, domains);
           await clearPanelFlow(env, telegramUserId);
+          const connection = await getConnection(env, connectionId, tenant.id);
+          const healthy = await healthyResolvers(env, tenant.id);
+          const upstream = healthy[0]?.ip ?? "1.1.1.1";
           await sendView(env, message.chat.id, {
-            text: `🛡️ ${published} رکورد TXT لیست سفید در zone شما منتشر شد؛ دامنه‌ها: <code>${escapeHtml(domains.join("، "))}</code>`,
+            text: [
+              `🛡️ لیست سفید منتشر شد: ${published} رکورد TXT خواندنی (<code>_white1.${escapeHtml(connection.resource_zone_name ?? "")}</code> …)؛ دامنه‌ها: <code>${escapeHtml(domains.join("، "))}</code>`,
+              `کانفیگ sing-box (روی بالادست سالم اسکنر): <code>${escapeHtml(JSON.stringify({ type: "udp", tag: "doh-white", server: upstream }))}</code>`,
+              "راهنمای اجرا: ۱) این JSON را در dns.servers بگذارید. ۲) rule با domain_suffix روی لیست خود → outbound direct. ۳) مهر سلامت: در تست DNS یکی از دامنه‌ها را بپرسید — باید REAL برگردد.",
+            ].join("\n"),
             keyboard: omniBackMenuKeyboard(),
             html: true,
           });
-          return sendRendered(message.chat.id, await renderBuilderCard(env, tenant.id, deploymentId, "white"));
+          return sendRendered(message.chat.id, await renderBuilderCard(env, principal, connectionId, "white"));
         } catch (error) {
           await clearPanelFlow(env, telegramUserId);
           const reason = faErrorMessage(error) ?? "انتشار ناموفق بود؛ اتصال Cloudflare را بررسی کنید.";
           return webhookSend(message.chat.id, `⚠️ ${reason}`, omniMainMenuKeyboard());
         }
+      }
+      if (flow.flow === "slipcfg") {
+        const parts = text.trim().split(/\s+/);
+        const domain = (parts[0] ?? "").toLowerCase();
+        const pubkey = (parts[1] ?? "").toLowerCase();
+        if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(domain) || !/^[0-9a-f]{64}$/.test(pubkey)) {
+          return webhookSend(message.chat.id, "⚠️ فرمت درست یک خط است: «تونل.example.com <کلید عمومی 64 کاراکتر hex> [MTU]». دوباره بفرستید.", panelFlowKeyboard());
+        }
+        const mtu = Number(parts[2] ?? TUNNEL_DEFAULT_MTU);
+        if (!Number.isInteger(mtu) || mtu < 1000 || mtu > 9000) {
+          return webhookSend(message.chat.id, "⚠️ MTU باید عددی بین ۱۰۰۰ تا ۹۰۰۰ باشد.", panelFlowKeyboard());
+        }
+        await clearPanelFlow(env, telegramUserId);
+        const uri = slipnetUri(domain, pubkey, mtu);
+        await sendView(env, message.chat.id, {
+          text: [
+            "🌊 <b>کانفیگ Slipstream شما</b>",
+            `<code>${escapeHtml(uri)}</code>`,
+            "راهنمای اجرا: ۱) در اپ SlipNet/Slipstream گزینهٔ Import/Add config را بزنید و همین خط را paste کنید. ۲) فقط همین یک نود فعال شود. ۳) مهر سلامت: در تست DNS یک پرسش TXT روی دامنهٔ تونل بزنید — پاسخ باید همان چیزی باشد که سمت سرور برگردانده (بدون دستکاری اپراتور).",
+            "هیچ استقرار V13 در این مسیر لازم نیست؛ فقط یک نود Slipstream که خودتان بالا آورده‌اید.",
+          ].join("\n"),
+          keyboard: omniBackMenuKeyboard(),
+          html: true,
+        });
+        return json({ ok: true });
       }
       const result = await processPanelFlowText(env, telegramUserId, tenant.id, flow, text);
       const followUp = result.followUp === "clean-ip"
