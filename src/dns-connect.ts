@@ -63,6 +63,22 @@ export function cloudflareTokenTemplateUrl(): string {
   return `https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=${encoded}&accountId=*&zoneId=all&name=V13-OMNI-ROUTER`;
 }
 
+/**
+ * Panel-catalog token template: Workers/KV/D1 + zone read, deliberately NO DNS
+ * Edit — panels deploy on workers.dev and never touch DNS records, and asking
+ * for DNS Edit dragged users into the single-zone strictness of the DNS center.
+ */
+export function cloudflarePanelTemplateUrl(): string {
+  const permissions = [
+    { key: "zone", type: "read" },
+    { key: "workers_scripts", type: "edit" },
+    { key: "workers_kv_storage", type: "edit" },
+    { key: "d1", type: "edit" },
+  ];
+  const encoded = encodeURIComponent(JSON.stringify(permissions));
+  return `https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=${encoded}&accountId=*&zoneId=all&name=V13-PANEL-DEPLOY`;
+}
+
 /** One-time link for the standalone connect form (deliberately NOT the panel /login). */
 export async function issueConnectLink(env: Env, tenantId: string, next: "dns" | "panel"): Promise<{ url: string; ttlMinutes: number }> {
   const raw = randomToken(32);

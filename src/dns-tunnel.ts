@@ -86,14 +86,29 @@ export async function enableDnsTunnel(env: Env, principal: SessionPrincipal, dep
   return { tunnelHostname: tunnel, nsRecordId, glueRecordId };
 }
 
-export function slipnetUri(tunnelHostname: string, publicKey: string | null, mtu: number): string {
-  const params = [
-    `d=${encodeURIComponent(tunnelHostname)}`,
-    `k=${encodeURIComponent(publicKey ?? "")}`,
-    `mtu=${mtu}`,
-    `socks=${encodeURIComponent("127.0.0.1:2080")}`,
-  ];
-  return `slipnet://${params.join("&")}`;
+/**
+ * SlipNet deep-link in the app's official import format: `slipnet://` +
+ * base64 of the pipe-delimited v16 profile, exactly what SlipGate's
+ * `generate_slipnet_url` and dnstm-setup emit (verified against
+ * anonvector/SlipNet ConfigImporter.kt). The old `d=…&k=…` query form was
+ * never a real SlipNet scheme and imported nowhere.
+ */
+export function slipnetUri(
+  tunnelHostname: string,
+  publicKey: string | null,
+  mtu: number,
+  options: { transport?: "dnstt" | "ss"; resolverIp?: string; socksUser?: string; socksPass?: string } = {},
+): string {
+  const transport = options.transport ?? "dnstt";
+  const resolver = `${options.resolverIp ?? "8.8.8.8"}:53:0`;
+  const authMode = options.socksUser && options.socksPass ? "1" : "0";
+  const socksUser = options.socksUser ?? "";
+  const socksPass = options.socksPass ?? "";
+  void mtu; // MTU is a server-side setting; the SlipNet URI carries no MTU field.
+  const data =
+    `16|${transport}|${tunnelHostname}|${tunnelHostname}|${resolver}|${authMode}|5000|bbr|1080|127.0.0.1|0|` +
+    `${publicKey ?? ""}|${socksUser}|${socksPass}|0|||22|0|127.0.0.1|0||udp|password|||0|0|443|||0||0|0|`;
+  return `slipnet://${btoa(data)}`;
 }
 
 export const TUNNEL_EXPECTATIONS = [

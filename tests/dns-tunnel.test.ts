@@ -17,11 +17,18 @@ describe("DNS tunnel provisioning surface", () => {
     expect(tunnelHostnameFor("Example.com")).toBe("t.example.com");
   });
 
-  it("builds the slipnet URI exactly as the apps expect", () => {
-    const uri = slipnetUri("t.example.com", "ab".repeat(32), 1180);
-    expect(uri.startsWith("slipnet://d=t.example.com&k=")).toBe(true);
-    expect(uri).toContain("mtu=1180");
-    expect(uri).toContain("socks=127.0.0.1%3A2080");
+  it("builds the slipnet URI in SlipNet's official v16 base64 format", () => {
+    const key = "ab".repeat(32);
+    const uri = slipnetUri("t.example.com", key, 1180);
+    expect(uri.startsWith("slipnet://")).toBe(true);
+    const decoded = Buffer.from(uri.slice("slipnet://".length), "base64").toString("utf8");
+    const fields = decoded.split("|");
+    expect(fields[0]).toBe("16");
+    expect(fields[1]).toBe("dnstt");
+    expect(fields[3]).toBe("t.example.com");
+    expect(fields[11]).toBe(key);
+    // Same field count as SlipGate/dnstm-setup share URLs.
+    expect(fields).toHaveLength(36);
   });
 
   it("probes five MTU sizes including the default", () => {

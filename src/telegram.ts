@@ -64,7 +64,7 @@ import {
 } from "./dns-center";
 import { poisonLine, poisonSummary } from "./dns-poison";
 import { slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
-import { cloudflareTokenTemplateUrl, issueConnectLink } from "./dns-connect";
+import { cloudflarePanelTemplateUrl, issueConnectLink } from "./dns-connect";
 import { latestRirSnapshot, rirCardLine } from "./geoip-ir";
 import { renderDnsttIntroText } from "./dnstt";
 import { upsertDnsRecord } from "./cloudflare-api";
@@ -651,7 +651,7 @@ function panelTokenKeyboard(): TelegramInlineKeyboard {
   const cancel = cancelKeyboard().inline_keyboard[0];
   return {
     inline_keyboard: [
-      [{ text: "☁️ ساخت Token آمادهٔ پنل در Cloudflare", url: cloudflareTokenTemplateUrl() }],
+      [{ text: "☁️ ساخت Token آمادهٔ پنل در Cloudflare", url: cloudflarePanelTemplateUrl() }],
       ...(cancel ? [cancel] : []),
     ],
   };
@@ -1699,9 +1699,17 @@ async function showCallbackError(
     error: error instanceof Error ? error.message : String(error),
     stack: error instanceof Error ? error.stack : undefined,
   });
-  const message = faErrorMessage(error);
+  let message = faErrorMessage(error);
+  let html = false;
+  // Admins get the raw reason appended to the generic fallback, so a
+  // broken section can be diagnosed from the chat instead of wrangler tail.
+  if (message && message.startsWith("خطای موقت") && isAdminUserId(env, telegramUserId)) {
+    const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    message = `${message}\n🧾 <code>${escapeHtml(reason.slice(0, 300))}</code>`;
+    html = true;
+  }
   if (message) {
-    await sendView(env, chatId, { text: message, keyboard: omniBackMenuKeyboard(), html: false });
+    await sendView(env, chatId, { text: message, keyboard: omniBackMenuKeyboard(), html });
     return;
   }
   // The DNS center and the panel product never route users into the dedicated

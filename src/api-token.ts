@@ -179,9 +179,10 @@ export async function createTemporaryApiTokenConnection(
 }
 
 /**
- * Panel-product-only connection: the panel catalog owns its own temporary
- * connection lifecycle (created from the chat flow, auto-expiring like any
- * other scoped API-token connection). Never touches the dedicated env.
+ * Panel-product-only connection. Panels deploy Workers/KV/D1 on the user's
+ * account and never write DNS, so this validator deliberately requires NO
+ * DNS Edit and NO single-zone scope — the DNS-center strictness
+ * (createTemporaryApiTokenConnection) does not apply to the panel catalog.
  */
 export async function connectPanelTokenFromChat(
   env: Env,
@@ -189,22 +190,105 @@ export async function connectPanelTokenFromChat(
   telegramUserId: string,
   apiToken: string,
 ): Promise<string> {
-  const request = new Request("https://internal/api/v1/cloudflare/api-token", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ apiToken }),
-  });
-  const principal: SessionPrincipal = {
-    tenantId,
-    telegramUserId,
-    displayName: "panel-flow",
-    isAdmin: false,
-    sessionHash: "telegram-bot",
-  };
-  const response = await createTemporaryApiTokenConnection(request, env, principal);
-  const body = (await response.json().catch(() => null)) as { connection?: { id?: string }; error?: { message?: string } } | null;
-  if (response.status !== 201 || !body?.connection?.id) {
-    throw new HttpError(response.status, "panel_connect_failed", body?.error?.message ?? "ساخت اتصال پنل ناموفق بود");
+  const allowed = await rateLimit(env, `panel-token-connect:${tenantId}`, 10, 600);
+  if (!allowed) throw new HttpError(429, "rate_limited", "Too many Cloudflare connection attempts; try again later");
+  await eraseExpiredApiTokens(env);
+  const token = validateApiToken(apiToken);
+  const auth = { kind: "api_token" as const, token };
+
+  let verification: TokenVerification;
+  try {
+    verification = await cloudflareApi<TokenVerification>(auth, "/user/tokens/verify");
+  } catch {
+    throw new HttpError(401, "cloudflare_token_rejected", "Cloudflare rejected the API token");
   }
-  return body.connection.id;
+  if (verification.status !== "active") {
+    throw new HttpError(401, "cloudflare_token_inactive", "Cloudflare API token is not active");
+  }
+
+  // Zone read gives us account+zone metadata; when absent, the account list.
+  let accountId = "";
+  let accountName = "";
+  let zoneId: string | null = null;
+  let zoneName: string | null = null;
+  try {
+    const zones = await cloudflareApi<TokenZone[]>(auth, "/zones?per_page=50");
+    const first = zones[0];
+    if (first?.account?.id) {
+      accountId = first.account.id;
+      accountName = first.account.name;
+      zoneId = first.id;
+      zoneName = first.name;
+    }
+  } catch {
+    // Zone read missing: fall through to the account probe.
+  }
+  if (!accountId) {
+    try {
+      const accounts = await cloudflareApi<Array<{ id: string; name: string }>>(auth, "/accounts?per_page=1");
+      accountId = accounts[0]?.id ?? "";
+      accountName = accounts[0]?.name ?? "";
+    } catch {
+      throw new HttpError(
+        403,
+        "cloudflare_scope_missing",
+        "Token needs Zone Read (or Account Read) plus Workers Scripts Edit",
+      );
+    }
+  }
+  if (!accountId) {
+    throw new HttpError(403, "cloudflare_scope_missing", "Token needs Zone Read (or Account Read) plus Workers Scripts Edit");
+  }
+  try {
+    await cloudflareApi<unknown[]>(auth, `/accounts/${accountId}/workers/scripts?per_page=1`);
+  } catch {
+    throw new HttpError(
+      403,
+      "cloudflare_workers_permission_missing",
+      "Token needs Account:Workers Scripts:Edit (دکمهٔ «ساخت Token آمادهٔ پنل» همه را از قبل می‌چیند)",
+    );
+  }
+
+  const existing = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM oauth_connections
+     WHERE tenant_id = ? AND auth_type = 'api_token' AND revoked_at IS NULL AND expires_at > ?`,
+  ).bind(tenantId, nowIso()).first<{ count: number }>();
+  if ((existing?.count ?? 0) >= 3) {
+    throw new HttpError(409, "too_many_connections", "Disconnect an older temporary Cloudflare connection first");
+  }
+
+  const id = crypto.randomUUID();
+  const now = nowIso();
+  const expiresAt = effectiveExpiry(env, verification.expires_on);
+  const tokenEnc = await encryptJson(token, env.TOKEN_ENCRYPTION_KEY, `cloudflare:${id}:api-token`);
+  await env.DB.prepare(
+    `INSERT INTO oauth_connections
+      (id, tenant_id, auth_type, access_token_enc, refresh_token_enc, expires_at, scopes,
+       cf_user_id, cf_email, resource_account_id, resource_account_name, resource_zone_id,
+       resource_zone_name, created_at, updated_at)
+     VALUES (?, ?, 'api_token', ?, NULL, ?, 'panel-api-token', ?, NULL, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    id,
+    tenantId,
+    tokenEnc,
+    expiresAt,
+    verification.id?.slice(0, 128) ?? null,
+    accountId,
+    accountName.slice(0, 200),
+    zoneId,
+    zoneName ? zoneName.slice(0, 253) : null,
+    now,
+    now,
+  ).run();
+  await audit(env, {
+    tenantId,
+    actorType: "user",
+    actorId: telegramUserId,
+    action: "cloudflare.panel_token.connect",
+    resourceType: "cloudflare_connection",
+    resourceId: id,
+    outcome: "success",
+    metadata: { expiresAt, accountId, zoneId },
+  });
+  return id;
 }
