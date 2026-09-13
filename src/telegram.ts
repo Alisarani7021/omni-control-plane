@@ -52,10 +52,14 @@ import { aggregateMap, mapText, MAP_ISPS, MAP_TRANSPORT_LABELS, MAP_TRANSPORTS }
 import { directRaceDomains, listRaceWinners, raceLine } from "./domestic-race";
 import {
   addScanRange,
+  DNS_AUTO_RANGES,
   DNS_SCAN_INTERVAL_MINUTES,
+  ensureAutoRanges,
   healthyResolvers,
+  scanRangeNow,
   scanRangeStatus,
   logDnsCenterAction,
+  type RangeScanSummary,
 } from "./dns-center";
 import { poisonLine, poisonSummary } from "./dns-poison";
 import { slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
@@ -1100,7 +1104,26 @@ function renderDnsCenterView(): RenderedView {
   };
 }
 
+function rangeScanCardText(summary: RangeScanSummary): string {
+  const lines = [
+    `🔬 <b>اسکن کامل رنج <code>${escapeHtml(summary.cidr)}</code> تمام شد</b>`,
+    `• کل آدرس‌ها: ${summary.total}`,
+    `• سالم: ${summary.healthy}`,
+    `• جعلی (سیاه‌چاله): ${summary.fake}`,
+    `• پاسخ غلط: ${summary.wrong}`,
+    `• دسترس‌ناپذیر: ${summary.unreachable}`,
+  ];
+  if (summary.top.length > 0) {
+    lines.push("", "سریع‌ترین بالادست‌های سالم:", ...summary.top.map((item, index) => `${index + 1}) <code>${escapeHtml(item.ip)}</code>${item.rttMs !== null ? ` — ${item.rttMs}ms` : ""}`));
+  } else {
+    lines.push("", "هنوز هیچ بالادست سالمی در این رنج پیدا نشد (صادقانه، بدون عدد جعلی).");
+  }
+  lines.push("", `اسکن خودکار هر ${DNS_SCAN_INTERVAL_MINUTES} دقیقه تکرار می‌شود؛ رنج‌های خودکار سامانه هم همیشه در حال اسکن‌اند.`);
+  return lines.join("\n");
+}
+
 async function renderDnsScanView(env: Env, tenantId: string): Promise<RenderedView> {
+  await ensureAutoRanges(env, tenantId);
   const [healthy, ranges] = await Promise.all([healthyResolvers(env, tenantId), scanRangeStatus(env, tenantId)]);
   const lines = [
     "🔎 <b>یافتن DNS سالم</b> — پرسش واقعی TCP/53 از هر آدرس رنج؛ سالم = پاسخ درست به کاناری، بدون جواب سیاه‌چاله.",
@@ -1114,7 +1137,8 @@ async function renderDnsScanView(env: Env, tenantId: string): Promise<RenderedVi
       const state = range.last_scan_at
         ? `آخرین دور: ${range.last_scan_at.slice(0, 16).replace("T", " ")}`
         : `در حال اسکن: ${range.cursor}/${range.ips_total}`;
-      lines.push(`• رنج <code>${escapeHtml(range.cidr)}</code> (${range.ips_total} آدرس) — ${state}`);
+      const auto = DNS_AUTO_RANGES.includes(range.cidr) ? " · 🤖 خودکار سامانه" : "";
+      lines.push(`• رنج <code>${escapeHtml(range.cidr)}</code> (${range.ips_total} آدرس) — ${state}${auto}`);
     }
     lines.push("");
     if (healthy.length === 0) {
@@ -1151,8 +1175,14 @@ async function renderBuilderPicker(
   const title = kind === "master" ? "🛠️ Master DNS — روی کدام اتصال/zone؟" : "🛡️ White DNS — روی کدام اتصال/zone؟";
   if (connections.length === 0) {
     return {
-      text: `${title}\nهیچ اتصال Cloudflare ثبت نشده؛ اتصال فقط از فرم امن پنل ساخته می‌شود (هرگز در چت).`,
-      keyboard: { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] },
+      text: `${title}\nهنوز اتصال Cloudflare ندارید؛ با دکمهٔ «🔑 اتصال Cloudflare» وارد قدم اتصال شوید (فقط فرم امن پنل، هرگز در چت)، بعد به همین سازنده برگردید — انتشار مستقیم در zone خودتان است و هیچ ربطی به محیط اختصاصی ندارد.`,
+      keyboard: {
+        inline_keyboard: [
+          [{ text: "🔑 اتصال Cloudflare", callback_data: "v13:dns:connect" }],
+          [{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }],
+          ...homeRow(),
+        ],
+      },
       html: false,
     };
   }
@@ -1192,6 +1222,7 @@ async function renderBuilderCard(
       "نحوهٔ اجرا: ۱) «✍️ دامنه و کلید» را بزنید. ۲) در یک خط: «دامنه کلید عمومی [MTU]». ۳) خروجی را در اپ paste کنید. ۴) مهر سلامت: پرسش TXT روی همان دامنه.",
     ].join("\n");
     rows.push([{ text: "✍️ دامنه و کلید", callback_data: "v13:dnsb:slip:dom" }]);
+    rows.push([{ text: "🔑 اتصال Cloudflare (اختیاری: مهر سلامت TXT در zone خودتان)", callback_data: "v13:dns:connect" }]);
   } else {
     const connection = await getConnection(env, connectionId ?? "", principal.tenantId);
     const zoneName = connection.resource_zone_name ?? "zone شما";
@@ -1792,6 +1823,11 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     await edit(renderDnsTestView(env, decodeURIComponent(isp ?? ""), decodeURIComponent(city ?? "")));
     return true;
   }
+  if (data === "v13:dns:connect") {
+    await answerCallback(env, queryId, "اتصال Cloudflare");
+    await edit(await renderConnectPrompt(env, tenantId, telegramUserId, "🔑 مرکز DNS با اتصال Cloudflare خودتان می‌سازد و منتشر می‌کند — کاملاً جدا از محیط اختصاصی. اتصال فقط از فرم امن پنل ساخته می‌شود؛ بعد از ساخت، به همان سازنده برگردید."));
+    return true;
+  }
   if (data === "v13:dnsb:master" || data === "v13:dnsb:white" || data === "v13:dnsb:slip") {
     const kind = data.slice("v13:dnsb:".length) as "master" | "white" | "slip";
     await answerCallback(env, queryId, "سازندهٔ کانفیگ");
@@ -1917,7 +1953,7 @@ async function handleErrorView(
   return sendRendered(chatId, await renderConnectPrompt(env, tenantId, telegramUserId, "🔌 اتصال Cloudflare منقضی شده؛ اول دوباره وصل شوید."));
 }
 
-async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Response> {
+async function handleMessageUpdate(update: TelegramUpdate, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const message = update.message;
   const user = message?.from;
   if (!message || !user || user.is_bot || message.chat.type !== "private" || String(message.chat.id) !== String(user.id)) {
@@ -2066,13 +2102,25 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env): Promise<Re
         try {
           const parsed = await addScanRange(env, tenant.id, text);
           await clearPanelFlow(env, telegramUserId);
-          const view = await renderDnsScanView(env, tenant.id);
           await sendView(env, message.chat.id, {
-            text: `✅ رنج <code>${escapeHtml(parsed.cidr)}</code> (${parsed.ips.length} آدرس) ثبت شد؛ اسکن شروع شد و هر ${DNS_SCAN_INTERVAL_MINUTES} دقیقه تکرار می‌شود.`,
+            text: `✅ رنج <code>${escapeHtml(parsed.cidr)}</code> (${parsed.ips.length} آدرس) ثبت شد؛ اسکن کامل و دقیق همین حالا شروع شد — کارت نتیجه چند ثانیه دیگر می‌رسد.`,
             keyboard: panelFlowKeyboard(),
             html: true,
           });
-          return sendRendered(message.chat.id, view);
+          const finish = async (): Promise<void> => {
+            const summary = await scanRangeNow(env, tenant.id, parsed.cidr);
+            await sendView(env, message.chat.id, {
+              text: rangeScanCardText(summary),
+              keyboard: { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] },
+              html: true,
+            });
+          };
+          if (ctx) {
+            ctx.waitUntil(finish());
+            return json({ ok: true });
+          }
+          await finish();
+          return sendRendered(message.chat.id, await renderDnsScanView(env, tenant.id));
         } catch (error) {
           const reason = faErrorMessage(error) ?? "رنج معتبر نیست؛ مثال: 178.22.122.0/24";
           return webhookSend(message.chat.id, `⚠️ ${reason}`, panelFlowKeyboard());
@@ -2337,26 +2385,11 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
     }
     if (data === "v13:dep:new") {
       if (messageId === undefined) return json({ ok: true });
-      const connections = await botListConnections(env, principal);
-      if (connections.length === 0) {
-        await answerCallback(env, query.id, "اول باید Cloudflare را وصل کنید.");
-        await editView(
-          env,
-          chatId,
-          messageId,
-          await renderConnectPrompt(env, tenant.id, telegramUserId, "➕ برای ساخت استقرار اول اتصال Cloudflare بسازید."),
-        );
-        return json({ ok: true });
-      }
-      await answerCallback(env, query.id, "اتصال را انتخاب کنید.");
-      const rows: TelegramInlineKeyboard["inline_keyboard"] = connections.map((connection) => ([
-        { text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40), callback_data: `v13:conn-panel:${connection.id}` },
-      ]));
-      rows.push(cancelKeyboard().inline_keyboard[0]!);
+      await answerCallback(env, query.id, "کاتالوگ پنل‌ها");
       await editView(env, chatId, messageId, {
-        text: "➕ ساخت استقرار جدید — اتصال Cloudflare را انتخاب کنید:",
-        keyboard: { inline_keyboard: rows },
-        html: false,
+        text: panelCatalogText(),
+        keyboard: panelCatalogKeyboard(),
+        html: true,
       });
       return json({ ok: true });
     }
@@ -2380,8 +2413,36 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       }
       await clearWizard(env, telegramUserId);
       await clearPanelFlow(env, telegramUserId);
+      let connectionId = panelPick.connectionId;
+      if (!connectionId && messageId !== undefined) {
+        const connections = await botListConnections(env, principal);
+        if (connections.length === 0) {
+          await answerCallback(env, query.id, "اول اتصال Cloudflare");
+          await editView(
+            env,
+            chatId,
+            messageId,
+            await renderConnectPrompt(env, tenant.id, telegramUserId, `🚀 پنل‌ها روی اتصال Cloudflare خودتان استقرار می‌یابند — کاملاً جدا از محیط اختصاصی. اول با فرم امن پنل اتصال بسازید، بعد دوباره همین پنل را بزنید.`),
+          );
+          return json({ ok: true });
+        }
+        if (connections.length > 1) {
+          await answerCallback(env, query.id, "اتصال را انتخاب کنید");
+          const rows: TelegramInlineKeyboard["inline_keyboard"] = connections.map((connection) => ([
+            { text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40), callback_data: `v13:dep-panel:${spec.key}:${connection.id}` },
+          ]));
+          rows.push(cancelKeyboard().inline_keyboard[0]!);
+          await editView(env, chatId, messageId, {
+            text: `➕ ${spec.name} روی کدام اتصال Cloudflare استقرار یابد؟`,
+            keyboard: { inline_keyboard: rows },
+            html: false,
+          });
+          return json({ ok: true });
+        }
+        connectionId = connections[0]?.id ?? "";
+      }
       const flow: PanelFlow = { flow: "panel", step: FLOW_STEP_PANEL_NAME, data: { panel: spec.key } };
-      if (panelPick.connectionId) flow.data["connection"] = panelPick.connectionId;
+      if (connectionId) flow.data["connection"] = connectionId;
       await savePanelFlow(env, telegramUserId, flow);
       await answerCallback(env, query.id, `${spec.name} — نام Worker را بفرستید`);
       const view: RenderedView = { text: panelPromptFor(spec), keyboard: panelFlowKeyboard(), html: true };
@@ -2390,7 +2451,34 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       return json({ ok: true });
     }
     if (data === "v13:dep-vps" || data.startsWith("v13:dep-vps:")) {
-      const connectionId = data.slice("v13:dep-vps:".length);
+      let connectionId = data.slice("v13:dep-vps:".length);
+      if (!connectionId && messageId !== undefined) {
+        const connections = await botListConnections(env, principal);
+        if (connections.length === 0) {
+          await answerCallback(env, query.id, "اول اتصال Cloudflare");
+          await editView(
+            env,
+            chatId,
+            messageId,
+            await renderConnectPrompt(env, tenant.id, telegramUserId, "🖥️ ویزارد VPS روی اتصال Cloudflare خودتان اجرا می‌شود — جدا از محیط اختصاصی. اول اتصال بسازید، بعد دوباره بزنید."),
+          );
+          return json({ ok: true });
+        }
+        if (connections.length > 1) {
+          await answerCallback(env, query.id, "اتصال را انتخاب کنید");
+          const rows: TelegramInlineKeyboard["inline_keyboard"] = connections.map((connection) => ([
+            { text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40), callback_data: `v13:dep-vps:${connection.id}` },
+          ]));
+          rows.push(cancelKeyboard().inline_keyboard[0]!);
+          await editView(env, chatId, messageId, {
+            text: "🖥️ ویزارد کامل VPS روی کدام اتصال Cloudflare اجرا شود؟",
+            keyboard: { inline_keyboard: rows },
+            html: false,
+          });
+          return json({ ok: true });
+        }
+        connectionId = connections[0]?.id ?? "";
+      }
       try {
         const boundary = await botConnectionBoundary(env, principal, connectionId);
         const prompt = await beginDeployWizard(env, telegramUserId, boundary);
@@ -2745,7 +2833,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
   }
 }
 
-export async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleTelegramWebhook(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const providedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
   if (!env.TELEGRAM_WEBHOOK_SECRET || !(await constantTimeEqual(providedSecret, env.TELEGRAM_WEBHOOK_SECRET))) {
     await audit(env, { actorType: "telegram", action: "webhook.authenticate", outcome: "denied", request });
@@ -2758,7 +2846,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
   if ((inserted.meta.changes ?? 0) === 0) return json({ ok: true });
 
   if (update.callback_query) return handleCallbackUpdate(update, env);
-  if (update.message) return handleMessageUpdate(update, env);
+  if (update.message) return handleMessageUpdate(update, env, ctx);
   if (await forwardToOmni(env, update)) return json({ ok: true });
   return json({ ok: true });
 }

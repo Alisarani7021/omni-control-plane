@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyAnswers,
+  DNS_AUTO_RANGES,
   DNS_CANARIES,
   encodeDnsQuery,
+  ensureAutoRanges,
   parseCidr,
   parseDnsResponse,
+  scanRangeNow,
 } from "../src/dns-center";
 
 describe("DNS center range parsing", () => {
@@ -55,5 +58,65 @@ describe("honest verdicts", () => {
   it("marks unexpected answers wrong and empty answers unreachable", () => {
     expect(classifyAnswers(["93.184.216.34"], expected)).toBe("wrong");
     expect(classifyAnswers([], expected)).toBe("unreachable");
+  });
+});
+
+describe("auto ranges + immediate full scan", () => {
+  function makeEnv(countN: number, rangeId: string | null) {
+    const executed: Array<{ sql: string; params: unknown[] }> = [];
+    const DB = {
+      prepare(sql: string) {
+        const record = { sql, params: [] as unknown[] };
+        return {
+          bind(...params: unknown[]) {
+            record.params = params;
+            return {
+              sql,
+              params: record.params,
+              run: async () => {
+                executed.push(record);
+                return { success: true, meta: { changes: 1 } };
+              },
+              first: async <T>() => {
+                executed.push(record);
+                if (sql.includes("COUNT(*)")) return { n: countN } as unknown as T;
+                if (sql.includes("SELECT id FROM dns_scan_ranges")) return (rangeId ? { id: rangeId } : null) as unknown as T;
+                return null as unknown as T;
+              },
+              all: async <T>() => {
+                executed.push(record);
+                return { results: [] as T[] };
+              },
+            };
+          },
+        };
+      },
+      batch: async (items: Array<{ sql: string; params: unknown[] }>) => {
+        executed.push(...items);
+        return [];
+      },
+    };
+    return { env: { DB } as never, executed };
+  }
+
+  it("seeds the three system baseline ranges once, never twice", async () => {
+    const fresh = makeEnv(0, null);
+    const added = await ensureAutoRanges(fresh.env, "tenant-1");
+    expect(added).toBe(3);
+    const cidrs = fresh.executed.filter((item) => item.sql.startsWith("INSERT INTO dns_scan_ranges")).map((item) => item.params[2]);
+    expect(cidrs).toEqual([...DNS_AUTO_RANGES]);
+    const seeded = makeEnv(3, "range-1");
+    expect(await ensureAutoRanges(seeded.env, "tenant-1")).toBe(0);
+  });
+
+  it("full-scans every address of a range immediately and stores honest verdicts", async () => {
+    const { env, executed } = makeEnv(1, "range-9");
+    const summary = await scanRangeNow(env, "tenant-1", "178.22.122.4/30");
+    expect(summary.total).toBe(4);
+    expect(summary.unreachable).toBe(4); // node has no TCP/53 sockets: unreachable, never invented healthy
+    expect(summary.healthy).toBe(0);
+    expect(executed.some((item) => item.sql.startsWith("DELETE FROM dns_scan_results"))).toBe(true);
+    expect(executed.filter((item) => item.sql.startsWith("INSERT INTO dns_scan_results")).length).toBe(4);
+    expect(executed.some((item) => item.sql.startsWith("UPDATE dns_scan_ranges SET cursor = 0"))).toBe(true);
   });
 });

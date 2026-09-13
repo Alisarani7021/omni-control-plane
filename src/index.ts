@@ -63,7 +63,7 @@ function only(request: Request, methods: string[]): Response | null {
   return methods.includes(request.method) ? null : methodNotAllowed(methods);
 }
 
-async function route(request: Request, env: Env): Promise<Response> {
+async function route(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
 
@@ -77,7 +77,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (path === "/telegram/webhook") {
     const wrongMethod = only(request, ["POST"]);
-    return wrongMethod ?? handleTelegramWebhook(request, env);
+    return wrongMethod ?? handleTelegramWebhook(request, env, ctx);
   }
   if (path === "/api/v1/agent/bootstrap") {
     const wrongMethod = only(request, ["GET"]);
@@ -295,9 +295,9 @@ async function route(request: Request, env: Env): Promise<Response> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (error) {
       if (error instanceof HttpError) {
         return json({ error: { code: error.code, message: error.message } }, error.status);

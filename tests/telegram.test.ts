@@ -865,3 +865,89 @@ describe("V13.5 net-intel hub removal", () => {
     expect(result.status).toBe(200);
   });
 });
+
+describe("panel catalog independence + DNS builder connect key", () => {
+  it("opens the panel catalog directly from «دیپلوی پنل جدید» with zero connections", async () => {
+    const { env } = createEnv();
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        bodies.push(`${String(url)} :: ${String(init?.body ?? "")}`);
+        return Response.json({ ok: true, result: true });
+      }),
+    );
+    const update: TelegramUpdate = {
+      update_id: 4201,
+      callback_query: {
+        id: "cq-depnew",
+        data: "v13:dep:new",
+        from: { id: 555, is_bot: false, first_name: "Ali" },
+        message: { message_id: 77, chat: { id: 555, type: "private" } },
+      },
+    };
+    const response = await handleTelegramWebhook(webhookRequest(update), env);
+    await response.json();
+    const edited = bodies.find((body) => body.includes("editMessageText")) ?? "";
+    expect(edited).toContain("v13:dep-panel:bpb");
+    expect(edited).toContain("v13:dep-panel:zeus");
+    expect(edited).toContain("v13:dep-panel:nahan");
+    expect(edited).not.toContain("v13:conn-panel");
+  });
+
+  it("offers a Cloudflare connect key inside the DNS builders when no connection exists", async () => {
+    const { env } = createEnv();
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        bodies.push(`${String(url)} :: ${String(init?.body ?? "")}`);
+        return Response.json({ ok: true, result: true });
+      }),
+    );
+    const update: TelegramUpdate = {
+      update_id: 4202,
+      callback_query: {
+        id: "cq-master",
+        data: "v13:dnsb:master",
+        from: { id: 555, is_bot: false, first_name: "Ali" },
+        message: { message_id: 78, chat: { id: 555, type: "private" } },
+      },
+    };
+    const response = await handleTelegramWebhook(webhookRequest(update), env);
+    expect(await response.json()).toEqual({ ok: true });
+    const edited = bodies.find((body) => body.includes("editMessageText")) ?? "";
+    expect(edited).toContain("v13:dns:connect");
+  });
+
+  it("scans a handed-in range immediately and reports the precise verdict card", async () => {
+    const { env } = createEnv({
+      flowRow: { flow: "dnsrange", step: "dnsrange:cidr", state_json: "{}", expires_at: "2099-01-01T00:00:00.000Z" },
+      insertResults: { "SELECT id FROM dns_scan_": { id: "range-42" } },
+    });
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        bodies.push(`${String(url)} :: ${String(init?.body ?? "")}`);
+        return Response.json({ ok: true, result: true });
+      }),
+    );
+    const update: TelegramUpdate = {
+      update_id: 4203,
+      message: {
+        message_id: 91,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 555, type: "private" },
+        from: { id: 555, is_bot: false, first_name: "Ali" },
+        text: "178.22.122.4/30",
+      },
+    };
+    const response = await handleTelegramWebhook(webhookRequest(update), env);
+    await response.json(); // webhook reply payload (final rendered view)
+    const joined = bodies.join("\n");
+    expect(joined).toContain("اسکن کامل و دقیق همین حالا");
+    expect(joined).toContain("اسکن کامل رنج");
+    expect(joined).toContain("دسترس‌ناپذیر: 4");
+  });
+});
