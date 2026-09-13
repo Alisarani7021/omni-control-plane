@@ -141,31 +141,38 @@ describe("dnstt helper", () => {
 });
 
 describe("restored bot sections", () => {
-  it("shows every restored section in the main menu", () => {
+  it("keeps the restored sections and drops Cursor, the net-intel hub and the open conns row", () => {
     const callbacks = omniMainMenuKeyboard().inline_keyboard.flat().map((button) => button.callback_data);
     expect(callbacks).toContain("v13:pack");
     expect(callbacks).toContain("v13:dep:new");
     expect(callbacks).toContain("v13:dns");
-    expect(callbacks).toContain("v13:intel");
     expect(callbacks).toContain("v13:dnstt");
-    expect(callbacks).toContain("v13:cursor");
+    // Removed per owner request; conns lives inside the environment only.
+    expect(callbacks).not.toContain("v13:intel");
+    expect(callbacks).not.toContain("v13:cursor");
+    expect(callbacks).not.toContain("v13:conns");
   });
 
-  it("opens the net-intel hub from the parent key", async () => {
+  it("gives a picked panel its own in-chat token flow instead of a connect form", async () => {
     const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       calls.push({ method: String(url).split("/").pop() ?? "", body: JSON.parse(String(init.body)) as Record<string, unknown> });
       return Response.json({ ok: true, result: true });
     }));
-    const { env } = createEnv();
-    const response = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:intel")), env);
+    const { env, statements } = createEnv();
+    const response = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:dep-panel:bpb")), env);
     expect(await response.json()).toEqual({ ok: true });
     const edit = calls.find((call) => call.method === "editMessageText");
-    expect(String(edit?.body?.["text"])).toContain("هوش شبکه V13.5");
-    const keyboard = edit?.body?.["reply_markup"] as { inline_keyboard: Array<Array<{ callback_data?: string }>> };
-    const callbacks = keyboard.inline_keyboard.flat().map((button) => button.callback_data);
-    expect(callbacks).toContain("v13:rir");
-    expect(callbacks).toContain("v13:netmode");
+    expect(String(edit?.body?.["text"])).toContain("اتصال اختصاصی خودِ پنل");
+    expect(statements.some((sql) => sql.includes("INSERT INTO telegram_flows"))).toBe(true);
+  });
+
+  it("rejects a malformed token in the panel token step and keeps the flow open", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, result: true })));
+    const { env } = createEnv({ flowRow: { flow: "panel", step: "panel:token", data: { panel: "bpb", panel_name: "BPB" } } });
+    const response = await handleTelegramWebhook(webhookRequest(privateMessage("short")), env);
+    const payload = (await response.json()) as { text: string };
+    expect(payload.text).toContain("⚠️");
   });
 
   it("walks the dnstt wizard: vps → domain → package", async () => {
@@ -195,7 +202,7 @@ describe("restored bot sections", () => {
     expect(payload.text).toContain("IP معتبر نیست");
   });
 
-  it("answers the Cursor button honestly instead of a fake key", async () => {
+  it("ignores the removed Cursor callback entirely", async () => {
     const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
       calls.push({ method: String(url).split("/").pop() ?? "", body: JSON.parse(String(init.body)) as Record<string, unknown> });
@@ -204,8 +211,7 @@ describe("restored bot sections", () => {
     const { env } = createEnv();
     const response = await handleTelegramWebhook(webhookRequest(callbackQuery("v13:cursor")), env);
     expect(await response.json()).toEqual({ ok: true });
-    const edit = calls.find((call) => call.method === "editMessageText");
-    expect(String(edit?.body?.["text"])).toContain("Cursor");
-    expect(String(edit?.body?.["text"])).not.toContain("sk-omn" + "i");
+    const sent = calls.map((call) => String(call.body?.["text"] ?? "")).join("\n");
+    expect(sent).not.toContain("Cursor");
   });
 });

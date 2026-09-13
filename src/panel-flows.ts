@@ -31,6 +31,7 @@ export const FLOW_STEP_MAP_RTT = "map:rtt";
 export const FLOW_STEP_DONATE_KEY = "donate:key";
 export const FLOW_STEP_PACK_DOMAIN = "pack:domain";
 export const FLOW_STEP_PACK_UUID = "pack:uuid";
+export const FLOW_STEP_PANEL_TOKEN = "panel:token";
 export const FLOW_STEP_PANEL_NAME = "panel:name";
 export const FLOW_STEP_PANEL_PASS = "panel:pass";
 export const FLOW_STEP_DNSTT_VPS = "dnstt:vps";
@@ -162,6 +163,14 @@ export function flowPrompt(flow: PanelFlow): string {
         "",
         "UUID خودتان را بفرستید، یا <code>new</code> تا یک UUID تازه بسازم.",
         "هیچ‌چیز در سرور ذخیره نمی‌شود؛ بسته هر بار از همین دو مقدار ساخته می‌شود.",
+      ].join("\n");
+    case FLOW_STEP_PANEL_TOKEN:
+      return [
+        `🔑 <b>${String(flow.data["panel_name"] ?? "پنل").slice(0, 30)}</b> — اتصال اختصاصی خودِ پنل`,
+        "",
+        "توکن اسکوپ‌شدهٔ Cloudflare را همین‌جا بفرست (Zone Read + DNS Edit + Workers Edit روی یک Zone مشخص).",
+        "بلافاصله رمزنگاری می‌شود، فقط برای همین استقرار استفاده می‌شود و اتصال موقت خودش منقضی و حذف می‌شود.",
+        "اگر نمی‌خواهی توکن را در چت بفرستی: /cancel و از منو بخش اتصال Cloudflare را انتخاب کن.",
       ].join("\n");
     case FLOW_STEP_PANEL_NAME:
       return [

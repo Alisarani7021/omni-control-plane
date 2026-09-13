@@ -407,14 +407,19 @@ describe("ported panel sections in the bot", () => {
     expect(home).toContain("v13:check");
     expect(home).not.toContain("v13:health");
     // The panel deploy tools sit on the open menu now, right after the environment entry.
-    for (const callback of ["v13:deps", "v13:dep:new", "v13:conns", "v13:pack"] as const) {
+    for (const callback of ["v13:deps", "v13:dep:new", "v13:pack"] as const) {
       expect(home).toContain(callback);
     }
-    expect(home.slice(0, 5)).toEqual(["v13:login", "v13:deps", "v13:dep:new", "v13:conns", "v13:pack"]);
+    expect(home.slice(0, 5)).toEqual(["v13:login", "v13:deps", "v13:dep:new", "v13:pack", "v13:ip"]);
     expect(home).not.toContain("v13:usage");
+    // Owner request: the Cloudflare connection lives only inside the environment,
+    // and Cursor/VSCode plus the net-intel hub are removed completely.
+    expect(home).not.toContain("v13:conns");
+    expect(home).not.toContain("v13:cursor");
+    expect(home).not.toContain("v13:intel");
     const environment = omniEnvMenuKeyboard().inline_keyboard.flat().map((button) => button.callback_data);
     for (const callback of [
-      "v13:status", "v13:health", "v13:usage", "omni:home",
+      "v13:conns", "v13:status", "v13:health", "v13:usage", "omni:home",
     ]) {
       expect(environment).toContain(callback);
     }
@@ -775,13 +780,12 @@ describe("ported panel sections in the bot", () => {
   });
 });
 
-describe("V13.5 net-intel hub (restored per owner request)", () => {
-  it("keeps the parent hub key on the open menu; feature keys live inside the hub", () => {
+describe("V13.5 net-intel hub (removed per owner request)", () => {
+  it("keeps every net-intel key out of the open menu", () => {
     const callbacks = omniMainMenuKeyboard()
       .inline_keyboard.flat()
       .map((button) => button.callback_data);
-    expect(callbacks).toContain("v13:intel");
-    for (const callback of ["v13:netmode", "v13:rir", "v13:tun", "v13:race", "v13:slp"]) {
+    for (const callback of ["v13:intel", "v13:netmode", "v13:rir", "v13:tun", "v13:race", "v13:slp"]) {
       expect(callbacks).not.toContain(callback);
     }
     expect(callbacks).toContain("v13:dns");

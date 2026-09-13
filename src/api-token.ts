@@ -177,3 +177,34 @@ export async function createTemporaryApiTokenConnection(
     },
   }, 201);
 }
+
+/**
+ * Panel-product-only connection: the panel catalog owns its own temporary
+ * connection lifecycle (created from the chat flow, auto-expiring like any
+ * other scoped API-token connection). Never touches the dedicated env.
+ */
+export async function connectPanelTokenFromChat(
+  env: Env,
+  tenantId: string,
+  telegramUserId: string,
+  apiToken: string,
+): Promise<string> {
+  const request = new Request("https://internal/api/v1/cloudflare/api-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiToken }),
+  });
+  const principal: SessionPrincipal = {
+    tenantId,
+    telegramUserId,
+    displayName: "panel-flow",
+    isAdmin: false,
+    sessionHash: "telegram-bot",
+  };
+  const response = await createTemporaryApiTokenConnection(request, env, principal);
+  const body = (await response.json().catch(() => null)) as { connection?: { id?: string }; error?: { message?: string } } | null;
+  if (response.status !== 201 || !body?.connection?.id) {
+    throw new HttpError(response.status, "panel_connect_failed", body?.error?.message ?? "ساخت اتصال پنل ناموفق بود");
+  }
+  return body.connection.id;
+}
