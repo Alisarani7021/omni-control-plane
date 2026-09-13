@@ -770,12 +770,40 @@ describe("ported panel sections in the bot", () => {
 });
 
 describe("V13.5 dedicated net-intel keys", () => {
-  it("gives every new capability its own key on the main menu", () => {
+  it("exposes one parent net-intel key on the main menu, not six mixed keys", () => {
     const callbacks = omniMainMenuKeyboard()
       .inline_keyboard.flat()
       .map((button) => button.callback_data);
+    expect(callbacks).toContain("v13:intel");
     for (const callback of ["v13:netmode", "v13:dnstest", "v13:rir", "v13:tun", "v13:race", "v13:slp"]) {
-      expect(callbacks).toContain(callback);
+      expect(callbacks).not.toContain(callback);
+    }
+  });
+
+  it("opens the six dedicated keys from the hub with how-to-run guides", async () => {
+    const { env } = createEnv();
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        bodies.push(String(init?.body ?? ""));
+        return Response.json({ ok: true, result: true });
+      }),
+    );
+    const update: TelegramUpdate = {
+      update_id: 4102,
+      callback_query: {
+        id: "cq-intel",
+        data: "v13:intel",
+        from: { id: 555, is_bot: false, first_name: "Ali" },
+        message: { message_id: 43, chat: { id: 555, type: "private" } },
+      },
+    };
+    const response = await handleTelegramWebhook(webhookRequest(update), env);
+    expect(await response.json()).toEqual({ ok: true });
+    const edited = bodies.find((body) => body.includes("editMessageText")) ?? bodies[1] ?? "";
+    for (const callback of ["v13:netmode", "v13:dnstest", "v13:rir", "v13:tun", "v13:race", "v13:slp"]) {
+      expect(edited).toContain(callback);
     }
   });
 

@@ -257,14 +257,9 @@ const MENU_ROWS: TelegramInlineKeyboard["inline_keyboard"] = [
   [
     { text: "📈 مصرف و دارایی‌ها", callback_data: "v13:usage" },
   ],
-  // V13.5 net-intel: every capability gets its OWN dedicated key, never mixed
-  // into the older keyboards. Appended as a separate block at the bottom.
-  [{ text: "🧭 وضعیت شبکه", callback_data: "v13:netmode" }],
-  [{ text: "🧪 تست مسمومیت DNS", callback_data: "v13:dnstest" }],
-  [{ text: "🇮🇷 رنج‌های ملی", callback_data: "v13:rir" }],
-  [{ text: "🛰️ تونل DNS", callback_data: "v13:tun" }],
-  [{ text: "🏘️ مستقیم ملی", callback_data: "v13:race" }],
-  [{ text: "😴 خواب‌نت", callback_data: "v13:slp" }],
+  // V13.5 net-intel: ONE dedicated parent key; pressing it opens the hub with
+  // the six feature keys. Never mixed into the pre-V13.5 keyboards.
+  [{ text: "🧠 هوش شبکه V13.5", callback_data: "v13:intel" }],
 ];
 
 /* The locked private environment keeps only the tenant-wide management rows. */
@@ -1013,8 +1008,20 @@ function renderDnsTestView(env: Env): RenderedView {
       "اسکریپت ۳ نام شاهد را از ۷ رزلور (سامانه، 1.1.1.1، DoH کلادفلر، شکن، ملی، 403، رادار) می‌پرسد و پاسخ‌های خام را می‌فرستد؛",
       "سرور فقط جواب‌های سیاه‌چاله‌ای (loopback/0.0.0.0/10.10.34.34) را جعلی می‌شمارد و کارت «X از Y پاسخ جعلی» می‌دهد.",
       "نتیجه به aggregate نقشهٔ سانسور بر اساس (اپراتور/شهر) هم اضافه می‌شود. هیچ IP یا شناسه‌ای ذخیره نمی‌شود.",
+      "",
+      "نحوهٔ اجرا، قدم‌به‌قدم:",
+      "۱) خط curl بالا را کپی کنید و در ترمینال همان دستگاه (سرور یا گوشی با termux) اجرا کنید؛ به‌جای «اپراتور» و «شهر» مقدار واقعی بگذارید.",
+      "۲) اسکریپت خودش ۷ رزلور را می‌پرسد و پاسخ خام را می‌فرستد؛ چند ثانیه بیشتر طول نمی‌کشد.",
+      "۳) کارت تجمیعی («X از Y پاسخ جعلی بود») و نقشهٔ نت ملی با همان دادهٔ واقعی به‌روز می‌شوند.",
+      "۴) هر وقت خواستید تکرار کنید؛ هیچ IP یا شناسه‌ای ذخیره نمی‌شود.",
     ].join("\n"),
-    keyboard: mapKeyboard(),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "🔄 تازه‌سازی", callback_data: "v13:dnstest" }],
+        [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }],
+        ...homeRow(),
+      ],
+    },
     html: true,
   };
 }
@@ -1024,9 +1031,31 @@ function renderDnsTestView(env: Env): RenderedView {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// V13.5 net-intel standalone views — each feature owns its dedicated key and
-// its own card; nothing is mixed into the pre-V13.5 keyboards.
+// V13.5 net-intel standalone views — one parent key opens this hub; each
+// feature owns its dedicated key, its own card and a full how-to-run guide.
 // ---------------------------------------------------------------------------
+
+function intelHubView(): RenderedView {
+  return {
+    text: [
+      "🧠 <b>هوش شبکه V13.5</b> — شش قابلیت مستقل، هرکدام با کلید و کارت و راهنمای اجرای خودش.",
+      "همهٔ اعداد از اندازه‌گیری واقعی می‌آیند: پروب لبهٔ Worker (cron هر ۵ دقیقه)، گزارش ایجنت نود، و گزارش‌های crowd روی سرورهای خود کاربران.",
+      "اگر اندازه‌گیری نباشد کارت صادقانه می‌گوید «داده‌ای نیست» — هیچ عددی جعل نمی‌شود.",
+    ].join("\n"),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "🧭 وضعیت شبکه", callback_data: "v13:netmode" }],
+        [{ text: "🧪 تست مسمومیت DNS", callback_data: "v13:dnstest" }],
+        [{ text: "🇮🇷 رنج‌های ملی", callback_data: "v13:rir" }],
+        [{ text: "🛰️ تونل DNS", callback_data: "v13:tun" }],
+        [{ text: "🏘️ مستقیم ملی", callback_data: "v13:race" }],
+        [{ text: "😴 خواب‌نت", callback_data: "v13:slp" }],
+        ...homeRow(),
+      ],
+    },
+    html: true,
+  };
+}
 
 async function renderNetModeView(env: Env, tenantId: string): Promise<RenderedView> {
   const rows = await env.DB.prepare(
@@ -1043,7 +1072,12 @@ async function renderNetModeView(env: Env, tenantId: string): Promise<RenderedVi
     lines.push(`• <code>${escapeHtml(row.worker_hostname)}</code> (${escapeHtml(row.status)}) → ${NET_MODE_LABELS[mode]}`);
   }
   lines.push("منبع: edge_probes (cron هر ۵ دقیقه) و agent_reports. بدون داده = «بدون داده»، نه حدس.");
-  return { text: lines.join("\n"), keyboard: { inline_keyboard: [...homeRow()] }, html: true };
+  lines.push("نحوهٔ اجرا: چیزی اجرا نمی‌کنید؛ پروب‌ها خودکارند و این کارت فقط وضعیت واقعی هر استقرار را نشان می‌دهد.");
+  return {
+    text: lines.join("\n"),
+    keyboard: { inline_keyboard: [[{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()] },
+    html: true,
+  };
 }
 
 async function renderRirView(env: Env): Promise<RenderedView> {
@@ -1055,8 +1089,13 @@ async function renderRirView(env: Env): Promise<RenderedView> {
       ? "diff روزانهٔ delegated-irnic-extended-latest با snapshot پیشین؛ نگهداری ۱۴ روز؛ rule-set عمومی در /api/v1/geoip-ir.json."
       : "اولین snapshot با cron روزانه گرفته می‌شود؛ تا آن زمان هیچ عددی نمایش داده نمی‌شود.",
     `منبع: <code>${RIR_IR_URL}</code>`,
+    "نحوهٔ اجرا: چیزی اجرا نمی‌کنید؛ cron روزانه snapshot می‌گیرد و diff روی همین کارت می‌نشیند. rule-set پروفیل‌ها خودکار از /api/v1/geoip-ir.json به‌روز می‌شود.",
   ];
-  return { text: lines.join("\n"), keyboard: { inline_keyboard: [...homeRow()] }, html: true };
+  return {
+    text: lines.join("\n"),
+    keyboard: { inline_keyboard: [[{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()] },
+    html: true,
+  };
 }
 
 async function renderRaceView(env: Env): Promise<RenderedView> {
@@ -1069,8 +1108,13 @@ async function renderRaceView(env: Env): Promise<RenderedView> {
       ? `برندهٔ قطعی مستقیم (حداقل ۲ نمونه): ${direct.map((domain) => `<code>${escapeHtml(domain)}</code>`).join("، ")}`
       : "هنوز دامنه‌ای با برد مستقیم قطعی نداریم.",
     "برنده‌ها در rule-set «race-direct» پروفیل‌های sing-box اعمال می‌شوند؛ مقایسهٔ ms در کارت نقشه هم هست.",
+    "نحوهٔ اجرا: دستی چیزی نمی‌زنید؛ ایجنتِ بوت‌استرپ جدید یک‌بار مسابقهٔ مستقیم-در-برابر-تونل را per دامنه اندازه می‌گیرد و می‌فرستد؛ از اجرای بعدی بوت‌استرپ در پروفیل‌ها اعمال می‌شود.",
   ];
-  return { text: lines.join("\n"), keyboard: { inline_keyboard: [...homeRow()] }, html: true };
+  return {
+    text: lines.join("\n"),
+    keyboard: { inline_keyboard: [[{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()] },
+    html: true,
+  };
 }
 
 async function renderPickerView(env: Env, tenantId: string, prefix: "tun" | "slp"): Promise<RenderedView> {
@@ -1096,7 +1140,13 @@ async function renderPickerView(env: Env, tenantId: string, prefix: "tun" | "slp
   const buttons = rows.results.map((row) => [
     { text: `${row.worker_hostname} · ${row.status}`, callback_data: `v13:${prefix}:${row.id}` },
   ]);
-  return { text: title, keyboard: { inline_keyboard: [...buttons, ...homeRow()] }, html: false };
+  return {
+    text: title,
+    keyboard: {
+      inline_keyboard: [...buttons, [{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }], ...homeRow()],
+    },
+    html: false,
+  };
 }
 
 async function ownedDeploymentRow(env: Env, tenantId: string, deploymentId: string): Promise<DeploymentRow | null> {
@@ -1111,12 +1161,20 @@ async function renderTunnelView(env: Env, tenantId: string, deploymentId: string
     "SELECT tunnel_txt_rtt_ms, tunnel_status FROM agent_reports WHERE deployment_id = ? ORDER BY reported_at DESC LIMIT 1",
   ).bind(deploymentId).first<{ tunnel_txt_rtt_ms: number | null; tunnel_status: string | null }>();
   const suggestion = await mtuSuggestion(env);
-  const text = dnsTunnelCard({
-    deployment,
-    mtuSuggestion: suggestion?.mtu ?? null,
-    tunnelTxtRttMs: report?.tunnel_txt_rtt_ms ?? null,
-    tunnelStatus: report?.tunnel_status ?? null,
-  });
+  const text = [
+    dnsTunnelCard({
+      deployment,
+      mtuSuggestion: suggestion?.mtu ?? null,
+      tunnelTxtRttMs: report?.tunnel_txt_rtt_ms ?? null,
+      tunnelStatus: report?.tunnel_status ?? null,
+    }),
+    "",
+    "نحوهٔ اجرا، قدم‌به‌قدم:",
+    "۱) دکمهٔ «فعال‌سازی delegation» بزنید تا رکورد NS برای t.<zone> با همان Token اسکوپ‌شدهٔ Cloudflare خودتان ساخته شود (یک فراخوانی، بدون secret جدید).",
+    "۲) از «📦 جزئیات استقرار» دستور بوت‌استرپ جدید بگیرید و روی VPS اجرا کنید؛ واحدهای dnstt-server و slipstream-server نصب و کلیدها فقط روی خود VPS ساخته می‌شوند.",
+    "۳) خط slipnet:// همین کارت را کپی کنید و در اپ SlipNet در فیلد «import / paste configuration» بچسبانید؛ برای Slipstream فقط دامنهٔ t.<zone> کافی است.",
+    "۴) اثبات زنده‌بودن: «🩺 TXT rtt» روی کارت سلامت نودها (round-trip رکورد TXT، ≤۲ ثانیه). MTU هم با پنج پروب ۵۱۲ تا ۱۴۰۰ خودکار اندازه گرفته می‌شود.",
+  ].join("\n");
   const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
   if (deployment.dns_tunnel_enabled !== 1) {
     rows.push([{ text: "🛰️ فعال‌سازی delegation (NS+glue)", callback_data: `v13:tun:${deployment.id}:on` }]);
@@ -1126,6 +1184,7 @@ async function renderTunnelView(env: Env, tenantId: string, deploymentId: string
     { text: "📦 جزئیات استقرار", callback_data: `v13:dep:${deployment.id}` },
   ]);
   rows.push([{ text: "😴 خواب‌نت", callback_data: `v13:slp:${deployment.id}` }]);
+  rows.push([{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }]);
   rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
   return { text, keyboard: { inline_keyboard: rows }, html: true };
 }
@@ -1134,7 +1193,15 @@ async function renderSleeperView(env: Env, tenantId: string, deploymentId: strin
   const deployment = await ownedDeploymentRow(env, tenantId, deploymentId);
   if (!deployment) return { text: "استقرار پیدا نشد.", keyboard: omniBackMenuKeyboard(), html: false };
   const pending = await pendingSleeperCommand(env, deployment.id);
-  const text = sleeperCard({ deployment, pending, beaconName: beaconRecordName(deployment) });
+  const text = [
+    sleeperCard({ deployment, pending, beaconName: beaconRecordName(deployment) }),
+    "",
+    "نحوهٔ اجرا، قدم‌به‌قدم:",
+    "۱) فقط روی سرور خودتان و با اعتبارنامهٔ خودتان: دکمهٔ «فعال‌سازی sleeper (با پذیرش قیدها)» را بزنید؛ بدون پذیرش، arm نمی‌شود.",
+    "۲) نود ساکت می‌شود و فقط در پنجرهٔ روزانهٔ خودش (با jitter ±۹ دقیقه) یک beacon خواندنی TXT از دامنهٔ خودش می‌خواند؛ هیچ نوشتنی بیرون نمی‌رود.",
+    "۳) دکمهٔ ⛔ بیدارباش/گزارش فوری روی همین کارت است و لاگ کامل محلی در /var/lib/v13-agent/sleeper.log برای بازرسی شماست.",
+    "۴) «بازگشت به استاندارد» خواب را تمام می‌کند و گزارش دوره‌ای برمی‌گردد.",
+  ].join("\n");
   const rows: TelegramInlineKeyboard["inline_keyboard"] = [];
   if (deployment.role !== "sleeper") {
     rows.push([{ text: "😴 فعال‌سازی sleeper (با پذیرش قیدها)", callback_data: `v13:slp:${deployment.id}:consent` }]);
@@ -1150,6 +1217,7 @@ async function renderSleeperView(env: Env, tenantId: string, deploymentId: strin
     { text: "🔄 تازه‌سازی", callback_data: `v13:slp:${deployment.id}` },
     { text: "🛰️ تونل DNS", callback_data: `v13:tun:${deployment.id}` },
   ]);
+  rows.push([{ text: "🧠 هاب هوش شبکه", callback_data: "v13:intel" }]);
   rows.push([{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]);
   return { text, keyboard: { inline_keyboard: rows }, html: true };
 }
@@ -1641,6 +1709,13 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     await clearPanelFlow(env, telegramUserId);
     await answerCallback(env, queryId, "فرایند لغو شد.");
     await edit({ text: "فرایند نیمه‌کاره لغو شد.", keyboard: omniMainMenuKeyboard(), html: false });
+    return true;
+  }
+
+  // --- V13.5 net-intel hub (one parent key, six dedicated keys inside) ---
+  if (data === "v13:intel") {
+    await answerCallback(env, queryId, "هوش شبکه V13.5");
+    await edit(intelHubView());
     return true;
   }
 
