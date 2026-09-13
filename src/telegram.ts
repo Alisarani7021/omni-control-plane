@@ -60,9 +60,11 @@ import {
   scanRangeStatus,
   logDnsCenterAction,
   type RangeScanSummary,
+  type ScanProgress,
 } from "./dns-center";
 import { poisonLine, poisonSummary } from "./dns-poison";
 import { slipnetUri, TUNNEL_DEFAULT_MTU } from "./dns-tunnel";
+import { issueDnsConnectLink } from "./dns-connect";
 import { latestRirSnapshot, rirCardLine } from "./geoip-ir";
 import { upsertDnsRecord } from "./cloudflare-api";
 import { clearWhiteHoleDrop, latestWhiteHoleDrop, publishWhiteHoleDrop, whiteHoleReadCommands, whiteHoleText } from "./whitehole";
@@ -134,6 +136,7 @@ import type {
 interface TelegramApiResponse {
   ok: boolean;
   description?: string;
+  result?: unknown;
 }
 
 const TELEGRAM_RATE_LIMIT = 12;
@@ -500,7 +503,7 @@ async function listRecentDeployments(env: Env, tenantId: string): Promise<Deploy
   return rows.results ?? [];
 }
 
-async function telegramApi(env: Env, method: string, payload: Record<string, unknown>): Promise<void> {
+async function telegramApi(env: Env, method: string, payload: Record<string, unknown>): Promise<TelegramApiResponse> {
   const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -508,6 +511,7 @@ async function telegramApi(env: Env, method: string, payload: Record<string, unk
   });
   const result = await response.json<TelegramApiResponse>().catch(() => ({ ok: false as const }));
   if (!response.ok || !result.ok) throw new Error(`Telegram API request failed: ${response.status} ${method}`);
+  return result;
 }
 
 function webhookSend(chatId: number, text: string, replyMarkup?: TelegramInlineKeyboard, html = false, protect = false): Response {
@@ -814,6 +818,28 @@ async function renderConnsList(
   return { text: ["🔌 اتصال‌های فعال:", "", ...lines].join("\n"), keyboard: { inline_keyboard: rows }, html: false };
 }
 
+/** DNS-center-only token intake: its own one-time form, never the dedicated panel. */
+async function renderDnsConnectPrompt(env: Env, tenantId: string): Promise<RenderedView> {
+  const { url, ttlMinutes } = await issueDnsConnectLink(env, tenantId);
+  return {
+    text: [
+      "🔑 <b>اتصال اختصاصی مرکز DNS</b>",
+      "مرکز DNS محیط جدا خودش را دارد: توکن اسکوپ‌شدهٔ Cloudflare را فقط در فرم تک‌مرحله‌ای خودِ مرکز DNS بگذارید — نه در چت، نه در پنل محیط اختصاصی.",
+      `لینک یک‌بارمصرف فرم (${ttlMinutes} دقیقه اعتبار) پایین همین پیام است.`,
+      "بعد از ثبت، سازنده‌های Master/White/Slipstream خودکار همهٔ کارها (انتشار TXT و کانفیگ‌ها) را روی zone شما انجام می‌دهند.",
+    ].join("\n"),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "📱 باز کردن فرم در تلگرام", url }],
+        [{ text: "🌐 باز کردن فرم در مرورگر", url }],
+        [{ text: "🧨 حذف این پیام", callback_data: "v13:delmsg" }],
+      ],
+    },
+    html: true,
+    protect: true,
+  };
+}
+
 async function renderConnectPrompt(env: Env, tenantId: string, telegramUserId: string, intro: string): Promise<RenderedView> {
   const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenantId, telegramUserId);
   return {
@@ -1102,6 +1128,18 @@ function renderDnsCenterView(): RenderedView {
     keyboard: dnsCenterKeyboard(),
     html: true,
   };
+}
+
+function liveScanText(cidr: string, progress: ScanProgress): string {
+  const cells = 10;
+  const done = Math.max(0, Math.min(cells, Math.floor((progress.scanned / Math.max(progress.total, 1)) * cells)));
+  const bar = "▓".repeat(done) + "░".repeat(cells - done);
+  return [
+    `🔬 <b>اسکن زندهٔ رنج <code>${escapeHtml(cidr)}</code></b>`,
+    `<code>${bar}</code> ${progress.scanned}/${progress.total}`,
+    `• سالم: ${progress.healthy} · جعلی: ${progress.fake} · غلط: ${progress.wrong} · دسترس‌ناپذیر: ${progress.unreachable}`,
+    "شمارنده‌ها همین‌جا جلو می‌روند تا دور کامل تمام شود…",
+  ].join("\n");
 }
 
 function rangeScanCardText(summary: RangeScanSummary): string {
@@ -1824,8 +1862,8 @@ async function handlePanelCallback(ctx: PanelCallbackContext): Promise<boolean> 
     return true;
   }
   if (data === "v13:dns:connect") {
-    await answerCallback(env, queryId, "اتصال Cloudflare");
-    await edit(await renderConnectPrompt(env, tenantId, telegramUserId, "🔑 مرکز DNS با اتصال Cloudflare خودتان می‌سازد و منتشر می‌کند — کاملاً جدا از محیط اختصاصی. اتصال فقط از فرم امن پنل ساخته می‌شود؛ بعد از ساخت، به همان سازنده برگردید."));
+    await answerCallback(env, queryId, "فرم اتصال مرکز DNS");
+    await edit(await renderDnsConnectPrompt(env, tenantId));
     return true;
   }
   if (data === "v13:dnsb:master" || data === "v13:dnsb:white" || data === "v13:dnsb:slip") {
@@ -2102,27 +2140,54 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env, ctx?: Execu
         try {
           const parsed = await addScanRange(env, tenant.id, text);
           await clearPanelFlow(env, telegramUserId);
-          await sendView(env, message.chat.id, {
-            text: `✅ رنج <code>${escapeHtml(parsed.cidr)}</code> (${parsed.ips.length} آدرس) ثبت شد؛ اسکن کامل و دقیق همین حالا شروع شد — کارت نتیجه چند ثانیه دیگر می‌رسد.`,
-            keyboard: panelFlowKeyboard(),
-            html: true,
+          const sent = await telegramApi(env, "sendMessage", {
+            chat_id: message.chat.id,
+            text: `✅ رنج <code>${escapeHtml(parsed.cidr)}</code> (${parsed.ips.length} آدرس) ثبت شد؛ اسکن زنده شروع شد — شمارنده‌ها در همین پیام جلو می‌روند.`,
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
           });
+          const progressId = (sent.result as { message_id?: number } | undefined)?.message_id;
+          let lastEdit = 0;
+          const onProgress = async (progress: ScanProgress): Promise<void> => {
+            if (progressId === undefined) return;
+            const now = Date.now();
+            if (now - lastEdit < 2500) return;
+            lastEdit = now;
+            await telegramApi(env, "editMessageText", {
+              chat_id: message.chat.id,
+              message_id: progressId,
+              text: liveScanText(parsed.cidr, progress),
+              parse_mode: "HTML",
+              disable_web_page_preview: true,
+            }).catch(() => undefined);
+          };
           const finish = async (): Promise<void> => {
-            const summary = await scanRangeNow(env, tenant.id, parsed.cidr);
-            await sendView(env, message.chat.id, {
-              text: rangeScanCardText(summary),
-              keyboard: { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] },
-              html: true,
-            });
+            const summary = await scanRangeNow(env, tenant.id, parsed.cidr, onProgress);
+            const card = rangeScanCardText(summary);
+            const keyboard = { inline_keyboard: [[{ text: "🌐 مرکز DNS", callback_data: "v13:dns" }], ...homeRow()] };
+            if (progressId !== undefined) {
+              await telegramApi(env, "editMessageText", {
+                chat_id: message.chat.id,
+                message_id: progressId,
+                text: card,
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                reply_markup: keyboard,
+              }).catch(() => undefined);
+              return;
+            }
+            await sendView(env, message.chat.id, { text: card, keyboard, html: true });
           };
           if (ctx) {
             ctx.waitUntil(finish());
             return json({ ok: true });
           }
           await finish();
-          return sendRendered(message.chat.id, await renderDnsScanView(env, tenant.id));
+          return json({ ok: true });
         } catch (error) {
-          const reason = faErrorMessage(error) ?? "رنج معتبر نیست؛ مثال: 178.22.122.0/24";
+          const reason = error instanceof HttpError && error.message.includes("already registered")
+            ? "این رنج قبلاً ثبت شده و خودش هر ۳۰ دقیقه اسکن می‌شود؛ با «🔄 تازه‌سازی» کارت را ببینید."
+            : faErrorMessage(error) ?? "رنج معتبر نیست؛ مثال: 178.22.122.0/24";
           return webhookSend(message.chat.id, `⚠️ ${reason}`, panelFlowKeyboard());
         }
       }

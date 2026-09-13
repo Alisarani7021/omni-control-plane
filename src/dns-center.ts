@@ -198,6 +198,12 @@ export async function probeResolver(ip: string): Promise<ProbeResult> {
 export async function addScanRange(env: Env, tenantId: string, cidr: string): Promise<ParsedRange> {
   const parsed = parseCidr(cidr);
   if (!parsed) throw new HttpError(400, "invalid_input", "Range must be an IPv4 or /24../32 CIDR");
+  const duplicate = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ? AND cidr = ?")
+    .bind(tenantId, parsed.cidr)
+    .first<{ id: string }>();
+  if (duplicate) {
+    throw new HttpError(409, "invalid_deployment_state", `Range ${parsed.cidr} is already registered; it keeps auto-scanning`);
+  }
   const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM dns_scan_ranges WHERE tenant_id = ?")
     .bind(tenantId)
     .first<{ n: number }>();
@@ -233,6 +239,15 @@ export async function ensureAutoRanges(env: Env, tenantId: string): Promise<numb
   return added;
 }
 
+export interface ScanProgress {
+  scanned: number;
+  total: number;
+  healthy: number;
+  fake: number;
+  wrong: number;
+  unreachable: number;
+}
+
 export interface RangeScanSummary {
   cidr: string;
   total: number;
@@ -248,7 +263,12 @@ export interface RangeScanSummary {
  * parallel TCP/53 probes), replacing the range's stored results. Used the
  * moment the user hands a range to the bot; cron keeps refreshing afterwards.
  */
-export async function scanRangeNow(env: Env, tenantId: string, cidr: string): Promise<RangeScanSummary> {
+export async function scanRangeNow(
+  env: Env,
+  tenantId: string,
+  cidr: string,
+  onProgress?: (progress: ScanProgress) => Promise<void>,
+): Promise<RangeScanSummary> {
   const parsed = parseCidr(cidr);
   if (!parsed) throw new HttpError(400, "invalid_input", "Range must be an IPv4 or /24../32 CIDR");
   let row = await env.DB.prepare("SELECT id FROM dns_scan_ranges WHERE tenant_id = ? AND cidr = ?")
@@ -264,12 +284,20 @@ export async function scanRangeNow(env: Env, tenantId: string, cidr: string): Pr
   const rangeId = row.id;
   const checkedAt = nowIso();
   const collected: Array<{ ip: string; verdict: DnsVerdict; rttMs: number | null }> = [];
+  const progress: ScanProgress = { scanned: 0, total: parsed.ips.length, healthy: 0, fake: 0, wrong: 0, unreachable: 0 };
   for (let index = 0; index < parsed.ips.length; index += 16) {
     const wave = parsed.ips.slice(index, index + 16);
     const results = await Promise.all(wave.map((ip) => probeResolver(ip)));
     for (let offset = 0; offset < wave.length; offset += 1) {
-      collected.push({ ip: wave[offset] ?? "", verdict: results[offset]?.verdict ?? "unreachable", rttMs: results[offset]?.rttMs ?? null });
+      const verdict = results[offset]?.verdict ?? "unreachable";
+      collected.push({ ip: wave[offset] ?? "", verdict, rttMs: results[offset]?.rttMs ?? null });
+      progress.scanned += 1;
+      if (verdict === "healthy") progress.healthy += 1;
+      else if (verdict === "fake") progress.fake += 1;
+      else if (verdict === "wrong") progress.wrong += 1;
+      else progress.unreachable += 1;
     }
+    if (onProgress) await onProgress({ ...progress });
   }
   await env.DB.prepare("DELETE FROM dns_scan_results WHERE range_id = ?").bind(rangeId).run();
   const inserts = collected.map((item) =>

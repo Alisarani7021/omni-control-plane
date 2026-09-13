@@ -48,6 +48,7 @@ import {
   rotateSubscriptionToken,
 } from "./deployments";
 import { createTemporaryApiTokenConnection } from "./api-token";
+import { dnsConnectGet, dnsConnectPost } from "./dns-connect";
 import { HttpError, json, methodNotAllowed, readJson, requireSameOrigin } from "./http";
 import {
   disconnectCloudflareConnection,
@@ -174,6 +175,11 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
         "Cache-Control": "public, max-age=600",
       },
     });
+  }
+  if (path === "/dns/connect") {
+    if (request.method === "GET") return dnsConnectGet(request, env);
+    if (request.method === "POST") return dnsConnectPost(request, env);
+    return methodNotAllowed(["GET", "POST"]);
   }
   if (path === "/login") {
     const wrongMethod = only(request, ["GET"]);

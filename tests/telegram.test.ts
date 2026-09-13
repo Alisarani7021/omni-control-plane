@@ -36,6 +36,7 @@ function createEnv(options: FakeDbOptions = {}): { env: Env; statements: string[
   const statements: string[] = [];
   const executed: CapturedStatement[] = [];
   let lastRateWindow: number | null = null;
+  let dnsRangeInserted = false;
   const DB = {
     prepare(sql: string) {
       statements.push(sql);
@@ -47,6 +48,7 @@ function createEnv(options: FakeDbOptions = {}): { env: Env; statements: string[
             record,
             run: async () => {
               executed.push(record);
+              if (sql.startsWith("INSERT INTO dns_scan_ranges")) dnsRangeInserted = true;
               if (sql.includes("INSERT INTO rate_limits")) lastRateWindow = Number(params[1]);
               return {
                 success: true,
@@ -65,6 +67,10 @@ function createEnv(options: FakeDbOptions = {}): { env: Env; statements: string[
               if (sql.includes("FROM tenants")) return { id: "tenant-1", display_name: "Ali" } as unknown as T;
               if (sql.includes("FROM telegram_wizards")) return (options.wizardRow ?? null) as unknown as T;
               if (sql.includes("FROM telegram_flows")) return (options.flowRow ?? null) as unknown as T;
+              if (sql.includes("SELECT id FROM dns_scan_ranges")) {
+                const row = options.insertResults?.["SELECT id FROM dns_scan_"];
+                return (dnsRangeInserted && row ? row : null) as unknown as T;
+              }
               if (sql.includes("COUNT(*)")) return (options.insertResults?.["count"] ?? { count: 0 }) as unknown as T;
               return (options.insertResults?.[sql.slice(0, 24)] ?? null) as unknown as T;
             },
@@ -946,7 +952,7 @@ describe("panel catalog independence + DNS builder connect key", () => {
     const response = await handleTelegramWebhook(webhookRequest(update), env);
     await response.json(); // webhook reply payload (final rendered view)
     const joined = bodies.join("\n");
-    expect(joined).toContain("اسکن کامل و دقیق همین حالا");
+    expect(joined).toContain("اسکن زنده شروع شد");
     expect(joined).toContain("اسکن کامل رنج");
     expect(joined).toContain("دسترس‌ناپذیر: 4");
   });
