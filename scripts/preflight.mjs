@@ -19,7 +19,7 @@ let failed = false;
 for (const path of sourceFiles) {
   const content = readFileSync(path, "utf8");
   for (const rule of rules) {
-    if (rule.pattern.test(content)) {
+    if (rule.pattern.test(content) && (!rule.allowedSuffix || !path.endsWith(rule.allowedSuffix))) {
       console.error(`${rule.name}: ${path}`);
       failed = true;
     }
