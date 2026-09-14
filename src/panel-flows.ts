@@ -59,7 +59,7 @@ export function panelFlowKeyboard(): TelegramInlineKeyboard {
 function isFlowKind(value: string): value is PanelFlowKind {
   return (
     value === "rum" || value === "map" || value === "donate" || value === "pack" || value === "panel" ||
-    value === "dnsrange" || value === "white" || value === "slipcfg" || value === "dnstt"
+    value === "dnsrange" || value === "white" || value === "slipcfg" || value === "dnstt" || value === "omni"
   );
 }
 
