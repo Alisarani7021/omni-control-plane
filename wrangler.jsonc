@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "v13-control-plane",
+  "account_id": "4beda91649bed6f5d1271b89056d0565",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-09",
   "workers_dev": false,
