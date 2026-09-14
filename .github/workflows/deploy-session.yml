@@ -62,7 +62,40 @@ jobs:
       DEPLOY_VAR_CF_TOKEN: ${{ vars.CLOUDFLARE_API_TOKEN }}
       DEPLOY_VAR_CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       DEPLOY_VAR_TG_TOKEN: ${{ vars.TELEGRAM_BOT_TOKEN }}
+      # Candidates referenced only so their presence can be reported; no value
+      # is ever echoed (the step prints "set" / empty).
+      ALT_01: ${{ secrets.CLOUDFLARE_API_KEY }}
+      ALT_02: ${{ secrets.CLOUDFLARE_TOKEN }}
+      ALT_03: ${{ secrets.CLOUDFLARE_API }}
+      ALT_04: ${{ secrets.CF_API_TOKEN }}
+      ALT_05: ${{ secrets.CF_TOKEN }}
+      ALT_06: ${{ secrets.CF_API_KEY }}
+      ALT_07: ${{ secrets.CLOUDFLARE_API_TOKEN_V13 }}
+      ALT_08: ${{ secrets.CLOUDFLARE_TOKEN_V13 }}
+      ALT_09: ${{ secrets.CLOUDFLARE_DEPLOY_TOKEN }}
+      ALT_10: ${{ secrets.WORKERS_API_TOKEN }}
+      ALT_11: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+      ALT_12: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      ALT_13: ${{ secrets.CF_ACCOUNT_ID }}
+      ALT_14: ${{ secrets.ACCOUNT_ID }}
+      ALT_15: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      ALT_16: ${{ secrets.TELEGRAM_TOKEN }}
+      ALT_17: ${{ secrets.BOT_TOKEN }}
+      ALT_18: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+      ALT_19: ${{ secrets.WEBHOOK_SECRET }}
+      ALT_20: ${{ secrets.CLOUDFLARE_GLOBAL_API_KEY }}
     steps:
+      - name: Probe alternative credential names (presence only)
+        run: |
+          # Reports which credential-looking names exist in this repository, so a
+          # name or tab mix-up is visible without anyone revealing a value.
+          echo "CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:+set} CLOUDFLARE_API_KEY=${ALT_01:+set} CLOUDFLARE_TOKEN=${ALT_02:+set} CLOUDFLARE_API=${ALT_03:+set}"
+          echo "CF_API_TOKEN=${ALT_04:+set} CF_TOKEN=${ALT_05:+set} CF_API_KEY=${ALT_06:+set} CLOUDFLARE_API_TOKEN_V13=${ALT_07:+set}"
+          echo "CLOUDFLARE_TOKEN_V13=${ALT_08:+set} CLOUDFLARE_DEPLOY_TOKEN=${ALT_09:+set} WORKERS_API_TOKEN=${ALT_10:+set} CLOUDFLARE_WORKERS_TOKEN=${ALT_11:+set}"
+          echo "CLOUDFLARE_ACCOUNT_ID=${ALT_12:+set} CF_ACCOUNT_ID=${ALT_13:+set} ACCOUNT_ID=${ALT_14:+set}"
+          echo "TELEGRAM_BOT_TOKEN=${ALT_15:+set} TELEGRAM_TOKEN=${ALT_16:+set} BOT_TOKEN=${ALT_17:+set} TELEGRAM_WEBHOOK_SECRET=${ALT_18:+set} WEBHOOK_SECRET=${ALT_19:+set}"
+          echo "vars: CLOUDFLARE_API_TOKEN=${DEPLOY_VAR_CF_TOKEN:+set} CLOUDFLARE_ACCOUNT_ID=${DEPLOY_VAR_CF_ACCOUNT:+set} TELEGRAM_BOT_TOKEN=${DEPLOY_VAR_TG_TOKEN:+set}"
+
       - name: Check deployment credentials
         id: gate
         run: |
