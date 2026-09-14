@@ -70,6 +70,8 @@ jobs:
           echo "secrets: TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+set}"
           echo "secrets: TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:+set}"
           echo "vars-fallback: CLOUDFLARE_API_TOKEN=${DEPLOY_VAR_CF_TOKEN:+set} CLOUDFLARE_ACCOUNT_ID=${DEPLOY_VAR_CF_ACCOUNT:+set} TELEGRAM_BOT_TOKEN=${DEPLOY_VAR_TG_TOKEN:+set}"
+          # Also surfaced as an annotation so the result is readable without logs.
+          echo "::notice title=Deploy credentials (presence only)::secret.CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:+set} · secret.CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:+set} · secret.TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+set} · secret.TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:+set} · vars.CLOUDFLARE_API_TOKEN=${DEPLOY_VAR_CF_TOKEN:+set}"
           if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning title=Deploy skipped::CLOUDFLARE_API_TOKEN is not set in this repository."
