@@ -45,7 +45,7 @@ export async function createOmniNode(env: Env, principal: SessionPrincipal, conn
   const auth = await getValidCloudflareAuth(env, connection);
   const accountId = connection.resource_account_id;
   if (!accountId) throw new Error("connection has no stored account boundary");
-  const suffix = randomToken(3).replaceAll("-", "").slice(0, 6);
+  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 6);
   const workerName = `omni-${suffix}`;
   const agentKey = randomToken(24);
   const plan = { accountId, workerName, d1Name: `omni-${suffix}`, agentKey, signingSecret: randomToken(32) };
