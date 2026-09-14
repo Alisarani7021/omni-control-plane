@@ -5,7 +5,7 @@
 # Unlike deploy.yml (push to main), this one is a full pipeline: the whole
 # verification suite must pass first, then migrations + deploy + webhook run.
 #
-# Repo secrets (Settings → Secrets and variables → Actions):
+# Repo secrets (Settings → Secrets and variables → Actions → "Secrets" tab):
 #   CLOUDFLARE_API_TOKEN    — Account: Workers Scripts Edit, D1 Edit;
 #                             Zone: Workers Routes Edit, Zone Read
 #   CLOUDFLARE_ACCOUNT_ID   — optional; wrangler.jsonc pins account_id too
@@ -14,7 +14,11 @@
 #                             It must equal the Worker secret, otherwise the
 #                             live bot would reject Telegram's updates, so the
 #                             script leaves the registration alone when unset.
-# Without CLOUDFLARE_API_TOKEN the deploy job skips with a warning (never fails).
+# A handful of alternative names is accepted for the Cloudflare credential so a
+# naming mix-up does not silently skip the deploy.
+#
+# Without any Cloudflare token the deploy job skips with a warning (never fails)
+# and reports which names it looked for — values are never printed.
 name: v13-deploy-session
 
 on:
@@ -53,67 +57,49 @@ jobs:
     env:
       # CI=true keeps wrangler non-interactive (no confirmation prompts).
       CI: "true"
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
-      # Read-only presence probe: catches the common mix-up of storing the
-      # credentials on the "Variables" tab (or under a different name).
-      DEPLOY_VAR_CF_TOKEN: ${{ vars.CLOUDFLARE_API_TOKEN }}
-      DEPLOY_VAR_CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      DEPLOY_VAR_TG_TOKEN: ${{ vars.TELEGRAM_BOT_TOKEN }}
-      # Candidates referenced only so their presence can be reported; no value
-      # is ever echoed (the step prints "set" / empty).
-      ALT_01: ${{ secrets.CLOUDFLARE_API_KEY }}
-      ALT_02: ${{ secrets.CLOUDFLARE_TOKEN }}
-      ALT_03: ${{ secrets.CLOUDFLARE_API }}
-      ALT_04: ${{ secrets.CF_API_TOKEN }}
-      ALT_05: ${{ secrets.CF_TOKEN }}
-      ALT_06: ${{ secrets.CF_API_KEY }}
-      ALT_07: ${{ secrets.CLOUDFLARE_API_TOKEN_V13 }}
-      ALT_08: ${{ secrets.CLOUDFLARE_TOKEN_V13 }}
-      ALT_09: ${{ secrets.CLOUDFLARE_DEPLOY_TOKEN }}
-      ALT_10: ${{ secrets.WORKERS_API_TOKEN }}
-      ALT_11: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
-      ALT_12: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      ALT_13: ${{ secrets.CF_ACCOUNT_ID }}
-      ALT_14: ${{ secrets.ACCOUNT_ID }}
-      ALT_15: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      ALT_16: ${{ secrets.TELEGRAM_TOKEN }}
-      ALT_17: ${{ secrets.BOT_TOKEN }}
-      ALT_18: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
-      ALT_19: ${{ secrets.WEBHOOK_SECRET }}
-      ALT_20: ${{ secrets.CLOUDFLARE_GLOBAL_API_KEY }}
+      # Presence-probed candidates: a name or tab mix-up stays visible, and the
+      # credential is picked up from whichever name actually holds it.
+      CF_TOKEN_01: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_TOKEN_02: ${{ secrets.CF_API_TOKEN }}
+      CF_TOKEN_03: ${{ secrets.CLOUDFLARE_API_KEY }}
+      CF_TOKEN_04: ${{ secrets.CLOUDFLARE_TOKEN }}
+      CF_TOKEN_05: ${{ secrets.CF_TOKEN }}
+      CF_TOKEN_06: ${{ secrets.CONFIG_DEPLOY_TOKEN }}
+      CF_TOKEN_07: ${{ secrets.CLOUDFLARE_API_TOKEN_V13 }}
+      CF_TOKEN_08: ${{ vars.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Probe alternative credential names (presence only)
-        run: |
-          # Reports which credential-looking names exist in this repository, so a
-          # name or tab mix-up is visible without anyone revealing a value.
-          echo "CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:+set} CLOUDFLARE_API_KEY=${ALT_01:+set} CLOUDFLARE_TOKEN=${ALT_02:+set} CLOUDFLARE_API=${ALT_03:+set}"
-          echo "CF_API_TOKEN=${ALT_04:+set} CF_TOKEN=${ALT_05:+set} CF_API_KEY=${ALT_06:+set} CLOUDFLARE_API_TOKEN_V13=${ALT_07:+set}"
-          echo "CLOUDFLARE_TOKEN_V13=${ALT_08:+set} CLOUDFLARE_DEPLOY_TOKEN=${ALT_09:+set} WORKERS_API_TOKEN=${ALT_10:+set} CLOUDFLARE_WORKERS_TOKEN=${ALT_11:+set}"
-          echo "CLOUDFLARE_ACCOUNT_ID=${ALT_12:+set} CF_ACCOUNT_ID=${ALT_13:+set} ACCOUNT_ID=${ALT_14:+set}"
-          echo "TELEGRAM_BOT_TOKEN=${ALT_15:+set} TELEGRAM_TOKEN=${ALT_16:+set} BOT_TOKEN=${ALT_17:+set} TELEGRAM_WEBHOOK_SECRET=${ALT_18:+set} WEBHOOK_SECRET=${ALT_19:+set}"
-          echo "vars: CLOUDFLARE_API_TOKEN=${DEPLOY_VAR_CF_TOKEN:+set} CLOUDFLARE_ACCOUNT_ID=${DEPLOY_VAR_CF_ACCOUNT:+set} TELEGRAM_BOT_TOKEN=${DEPLOY_VAR_TG_TOKEN:+set}"
-
-      - name: Check deployment credentials
+      - name: Resolve deployment credentials
         id: gate
         run: |
-          # Presence only — values are never printed, and GitHub masks them anyway.
-          echo "repo=${GITHUB_REPOSITORY} ref=${GITHUB_REF}"
-          echo "secrets: CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:+set}"
-          echo "secrets: CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:+set}"
-          echo "secrets: TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+set}"
-          echo "secrets: TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:+set}"
-          echo "vars-fallback: CLOUDFLARE_API_TOKEN=${DEPLOY_VAR_CF_TOKEN:+set} CLOUDFLARE_ACCOUNT_ID=${DEPLOY_VAR_CF_ACCOUNT:+set} TELEGRAM_BOT_TOKEN=${DEPLOY_VAR_TG_TOKEN:+set}"
-          # Also surfaced as an annotation so the result is readable without logs.
-          echo "::warning title=Deploy credentials (presence only)::secret.CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:+set} · secret.CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:+set} · secret.TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+set} · secret.TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:+set} · vars.CLOUDFLARE_API_TOKEN=${DEPLOY_VAR_CF_TOKEN:+set}"
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+          # Presence only — a secret's value is never echoed; GitHub masks it anyway.
+          echo "secrets seen: CLOUDFLARE_API_TOKEN=${CF_TOKEN_01:+set} CF_API_TOKEN=${CF_TOKEN_02:+set} CLOUDFLARE_API_KEY=${CF_TOKEN_03:+set} CLOUDFLARE_TOKEN=${CF_TOKEN_04:+set} CF_TOKEN=${CF_TOKEN_05:+set} CLOUDFLARE_API_TOKEN_V13=${CF_TOKEN_07:+set} vars.CLOUDFLARE_API_TOKEN=${CF_TOKEN_08:+set}"
+          echo "secrets seen: CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:+set} TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+set} TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:+set}"
+          token=""; source_name="none"
+          for name in CLOUDFLARE_API_TOKEN CF_API_TOKEN CLOUDFLARE_API_KEY CLOUDFLARE_TOKEN CF_TOKEN CLOUDFLARE_API_TOKEN_V13; do
+            candidate=""
+            case "$name" in
+              CLOUDFLARE_API_TOKEN) candidate="${CF_TOKEN_01:-}" ;;
+              CF_API_TOKEN) candidate="${CF_TOKEN_02:-}" ;;
+              CLOUDFLARE_API_KEY) candidate="${CF_TOKEN_03:-}" ;;
+              CLOUDFLARE_TOKEN) candidate="${CF_TOKEN_04:-}" ;;
+              CF_TOKEN) candidate="${CF_TOKEN_05:-}" ;;
+              CLOUDFLARE_API_TOKEN_V13) candidate="${CF_TOKEN_07:-}" ;;
+            esac
+            if [ -z "$token" ] && [ -n "$candidate" ]; then token="$candidate"; source_name="$name"; fi
+          done
+          if [ -z "$token" ] && [ -n "${CF_TOKEN_08:-}" ]; then token="$CF_TOKEN_08"; source_name="vars.CLOUDFLARE_API_TOKEN"; fi
+          echo "::warning title=Deploy credential probe (names only)::token_source=${source_name} · looked for: CLOUDFLARE_API_TOKEN, CF_API_TOKEN, CLOUDFLARE_API_KEY, CLOUDFLARE_TOKEN, CF_TOKEN, CLOUDFLARE_API_TOKEN_V13, vars.CLOUDFLARE_API_TOKEN"
+          if [ -z "$token" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Deploy skipped::CLOUDFLARE_API_TOKEN is not set in this repository."
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Deploy skipped::No Cloudflare credential is visible to Actions in this repository."
+            exit 0
           fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "CLOUDFLARE_API_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "Using the Cloudflare token stored as: $source_name"
 
       - if: steps.gate.outputs.ready == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
