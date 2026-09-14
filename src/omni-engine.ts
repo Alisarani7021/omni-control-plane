@@ -116,10 +116,27 @@ export async function deleteOmniNode(auth: CloudflareAuth, accountId: string, wo
   await cloudflareApi<unknown>(auth, `/accounts/${accountId}/d1/database/${d1Id}`, { method: "DELETE" }).catch(() => null);
 }
 
+/**
+ * Agent-channel auth headers. The control plane and the node must agree on
+ * this name, and the node is a *pinned artifact* sitting in the tenant's own
+ * Cloudflare account — renaming a header here cannot rename the bundles that
+ * are already deployed out there.
+ *
+ * The Kaveh→OMNI rebrand renamed the outbound header (`X-Omni-Agent`) while
+ * omni-panel/dist-headless kept reading `x-kaveh-agent`, so every agent call
+ * answered `403 «کلید عامل نامعتبر است»`: panel login tokens were never set,
+ * user lists/creation failed and the VIP seed silently gave up. Both names go
+ * out on every request, which is what the node reads today and what a bundle
+ * rebuilt after the rebrand will read tomorrow.
+ */
+export const OMNI_AGENT_HEADER = "X-Omni-Agent";
+export const OMNI_AGENT_LEGACY_HEADER = "X-Kaveh-Agent";
+
 /** The agent channel: src/api/agent.js on the node. Throws on non-ok. */
 export async function omniAgent<T>(baseUrl: string, agentKey: string, path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  headers.set("X-Omni-Agent", agentKey);
+  headers.set(OMNI_AGENT_HEADER, agentKey);
+  headers.set(OMNI_AGENT_LEGACY_HEADER, agentKey);
   headers.set("Accept", "application/json");
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const res = await fetch(`${baseUrl.replace(/\/$/u, "")}${path}`, { ...init, headers });

@@ -1,6 +1,14 @@
-# V13.5.0 Release Manifest
+# V13.5.2 Release Manifest
 
-Build date: 2026-09-13
+Build date: 2026-09-14
+
+## V13.5.2 — Agent-channel contract fix + honest headless-node UX
+
+- **Fixed: every OMNI node agent call answered `403 «کلید عامل نامعتبر است»`.** The Kaveh→OMNI rebrand renamed the control plane's outbound auth header to `X-Omni-Agent`, while the pinned tenant bundle (`omni-panel/dist-headless/omni-headless.js`) reads `x-kaveh-agent` — and the bundles already sitting in tenants' own Cloudflare accounts cannot be renamed from here. Consequences: `POST /api/agent/admin/password` (the «رمز مدیر نود» token) never applied, user list/creation failed, and the automatic VIP seed retried five times and gave up silently. `omniAgent()` now sends **both** header names (`src/omni-engine.ts`: `OMNI_AGENT_HEADER` + `OMNI_AGENT_LEGACY_HEADER`).
+- **Regression lock:** `tests/omni-agent-contract.test.ts` extracts the header name the pinned bundle actually reads from `OMNI_SOURCE` and fails if the outgoing request does not carry it (it also pins the node's own rejection text). This is the test that was missing when the rename shipped.
+- **Headless nodes no longer promise a web panel.** `<base>/panel` never existed on bot-deployed nodes: the headless bundle ships without `[assets]`, so every non-API path is a plain 404. The node-created card, the «🔑 رمز مدیر نود» view (renamed from «توکن ورود به پنل»), the recover flow and the panel empty-state text now state what is true — the node is API/subscription-only and the bot is its UI.
+- **Deploy workflow actually runs.** `.github/workflows/deploy.yml` used `secrets` inside a job-level `if`, which Actions rejects as an invalid workflow file: every run ended at 0s with "workflow file issue", so `main` was never auto-deployed. The gate is now a first step that writes an output (`secrets` is allowed in `env`, not in `if`), and the webhook step checks `env.TELEGRAM_BOT_TOKEN`. With the four repo secrets set, a push to `main` applies D1 migrations, deploys the worker and re-registers the webhook; without them the job skips with a notice instead of failing.
+- **Docs:** `docs/OMNI-PANEL-FA.md` documents the header contract, the headless-node scope and the corrected vendoring description.
 
 ## V13.5.1 — Independent DNS center
 

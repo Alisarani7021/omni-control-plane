@@ -103,7 +103,14 @@ export async function omniListUsers(env: Env, principal: SessionPrincipal, nodeI
 }
 
 /** «بازیابی رمز»: wipe the admin hash so the next visit sets a new password. */
-/** BPB-style entry: the bot sets the node's admin password itself and hands it over in chat. */
+/**
+ * Rotate the node's admin password and hand the owner the new value in chat.
+ *
+ * Honest scope: bot-deployed OMNI nodes are *headless* (dist-headless has no
+ * [assets]), so `/<base>/panel` does not exist and nothing in the bot links to
+ * it. The password this sets is the node's own admin credential (agent/API and
+ * any UI built on top of the node), and it invalidates every open session.
+ */
 export async function omniIssueLoginToken(env: Env, principal: SessionPrincipal, nodeId: string): Promise<{ token: string; url: string }> {
   const row = (await listOmniNodes(env, principal)).find((n) => n.id === nodeId);
   if (!row) throw new Error("node not found");

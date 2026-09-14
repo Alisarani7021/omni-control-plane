@@ -2615,7 +2615,7 @@ function deploymentIdFrom(data: string, prefix: string): string | null {
 function omniNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
   return {
     inline_keyboard: [
-      [{ text: "🔑 توکن ورود به پنل", callback_data: `v13:kaveh:token:${nodeId}` }],
+      [{ text: "🔑 رمز مدیر نود", callback_data: `v13:kaveh:token:${nodeId}` }],
       [
         { text: "👥 کاربران", callback_data: `v13:kaveh:users:${nodeId}` },
         { text: "➕ کاربر سریع", callback_data: `v13:kaveh:vip:${nodeId}` },
@@ -2658,7 +2658,7 @@ function omniListView(nodes: OmniNodeRow[]): RenderedView {
   const keyboard: TelegramInlineKeyboard = {
     inline_keyboard: [
       [{ text: "🚀 ساخت نود جدید", callback_data: "v13:kaveh:new" }],
-      ...nodes.map((n) => [{ text: `⚙️ ${n.worker_name}`, callback_data: `v13:kaveh:users:${n.id}` }, { text: "🔑 توکن", callback_data: `v13:kaveh:token:${n.id}` }]),
+      ...nodes.map((n) => [{ text: `⚙️ ${n.worker_name}`, callback_data: `v13:kaveh:users:${n.id}` }, { text: "🔑 رمز مدیر", callback_data: `v13:kaveh:token:${n.id}` }]),
       [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
     ],
   };
@@ -2762,8 +2762,8 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       const connections = await botListConnections(env, principal);
       await editView(env, chatId, messageId, {
         text: connections.length === 0
-          ? "⚒️ پنل OMNI\n\nهنوز نود OMNI ندارید و حساب Cloudflare هم متصل نیست.\nاول «🔌 اتصال حساب» بزنید: توکن رمزنگاری‌شده فقط برای ساخت نود روی اکانت خودتان ذخیره می‌شود.\nورود به پنل مثل BPB با توکنی است که همین ربات می‌سازد — نه پنل اختصاصی V13."
-          : "⚒️ نود OMNI ندارید.\nبا ساختن، یک Worker هدلس + D1 روی اکانت متصل‌شدهٔ خودتان دیپلوی می‌شود؛ مدیریت و توکن ورودش از همین ربات.",
+          ? "⚒️ پنل OMNI\n\nهنوز نود OMNI ندارید و حساب Cloudflare هم متصل نیست.\nاول «🔌 اتصال حساب» بزنید: توکن رمزنگاری‌شده فقط برای ساخت نود روی اکانت خودتان ذخیره می‌شود.\nنود OMNI یک Worker هدلس است؛ کاربر، اشتراک و مصرفش از همین ربات مدیریت می‌شود (پنل وبی جدا ندارد)."
+          : "⚒️ نود OMNI ندارید.\nبا ساختن، یک Worker هدلس + D1 روی اکانت متصل‌شدهٔ خودتان دیپلوی می‌شود؛ مدیریت و رمز مدیرش از همین ربات.",
         keyboard: {
           inline_keyboard: [
             [{ text: "🚀 ساخت نود OMNI", callback_data: "v13:kaveh:new" }],
@@ -2794,15 +2794,15 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       return json({ ok: true });
     }
     if (data.startsWith("v13:kaveh:token:")) {
-      await answerCallback(env, query.id, "ساخت توکن ورود…");
+      await answerCallback(env, query.id, "ساخت رمز مدیر…");
       const nodeId = data.slice("v13:kaveh:token:".length);
       try {
         const { token, url } = await omniIssueLoginToken(env, principal, nodeId);
         await sendView(env, chatId, {
-          text: `🔑 توکن ورود به پنل (مثل رمز BPB):\n<code>${token}</code>\n\nدر صفحهٔ ورود پنل همین را به‌جای رمز مدیر وارد کنید. تا وقتی عوضش نکنید معتبر است؛ توکن جدید همهٔ نشست‌های باز را هم می‌بندد.`,
+          text: `🔑 رمز مدیر نود OMNI:\n<code>${token}</code>\n\nنودِ OMNI هدلس است: صفحهٔ وب/پنل روی آن نصب نمی‌شود (UI این نود همین ربات است). این رمز، رمز مدیر خودِ نود است — برای API و ابزار خودت روی <code>${url.replace(/\/$/u, "")}</code>.\nهر بار که رمز تازه بسازی، همهٔ نشست‌های باز بسته می‌شوند.`,
           keyboard: {
             inline_keyboard: [
-              [{ text: "🌐 ورود به پنل", url: `${url.replace(/\/$/u, "")}/panel` }],
+              [{ text: "👥 کاربران نود", callback_data: `v13:kaveh:users:${nodeId}` }],
               [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
             ],
           },
@@ -2810,7 +2810,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
           protect: true,
         });
       } catch (err) {
-        await sendView(env, chatId, { text: `❌ توکن ساخته نشد: ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
+        await sendView(env, chatId, { text: `❌ رمز ساخته نشد: ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
       }
       return json({ ok: true });
     }
@@ -2828,9 +2828,9 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
           "⚒️ نود OMNI ساخته شد ✅",
           "",
           `📌 ورکر: ${made.node.worker_name}`,
-          `🔗 آدرس: ${made.baseUrl}/panel`,
+          `🔗 آدرس نود (اشتراک/API): ${made.baseUrl}`,
           "",
-          "⏳ ۱-۲ دقیقه صبر کنید؛ اولین بازدید رمز مدیر را می‌سازد.",
+          "🧭 این نود هدلس است: پنل وبی ندارد و همه‌چیز (کاربر، اشتراک، مصرف، رمز مدیر) از همین ربات مدیریت می‌شود.",
         ];
         if (made.vip) lines.push("", "👤 لینک اشتراک کاربر VIP:", made.vip.sub);
         else lines.push("", "⚠️ کاربر VIP خودکار نرسید؛ با «➕ کاربر سریع» بسازید.");
@@ -2875,7 +2875,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       const nodeId = data.slice("v13:kaveh:recover:".length);
       try {
         const base = await omniRecover(env, principal, nodeId);
-        await sendView(env, chatId, { text: `🔑 رمز مدیر پاک شد.\nاولین کسی که این لینک را باز کند رمز تازه می‌سازد — فقط به مالک بدهید:\n${base}/panel`, keyboard: omniNodeKeyboard(nodeId), html: false, protect: true });
+        await sendView(env, chatId, { text: `🔑 رمز مدیر نود پاک شد.\nاز «🔑 رمز مدیر نود» همین ربات رمز تازه بسازید؛ نود هدلس است و صفحهٔ ورود وب ندارد.\nآدرس نود: ${base}`, keyboard: omniNodeKeyboard(nodeId), html: false, protect: true });
       } catch (err) {
         await sendView(env, chatId, { text: `❌ ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
       }
