@@ -49,6 +49,31 @@ TTL و cron لازم:
 
 هیچ API Token واقعی در `wrangler.jsonc` قرار ندهید.
 
+## ۲.۱ استقرار خودکار از GitHub Actions (اختیاری ولی توصیه‌شده)
+
+دو workflow وجود دارد:
+
+- `.github/workflows/deploy.yml` — با هر push روی `main`: مهاجرت‌های D1 → `wrangler deploy` → تازه‌سازی دستورهای ربات.
+- `.github/workflows/deploy-session.yml` — همان کار برای شاخه‌های `arena/**` (پایپ‌لاین جلسه: اول کل تست‌ها، بعد استقرار).
+
+مسیر تنظیم سیکرت‌ها (فقط یک‌بار):
+
+`https://github.com/<owner>/<repo>/settings/secrets/actions` → تب **Secrets** (نه Variables، نه Codespaces، نه Dependabot) → **New repository secret**
+
+| نام دقیق | مقدار | لازم؟ |
+|---|---|---|
+| `CLOUDFLARE_API_TOKEN` | توکن اسکوپ‌شده: Account → Workers Scripts Edit و D1 Edit؛ Zone → Workers Routes Edit و Zone Read | بله |
+| `CLOUDFLARE_ACCOUNT_ID` | از نوار کنار داشبورد Cloudflare | اختیاری (`wrangler.jsonc` هم `account_id` دارد) |
+| `TELEGRAM_BOT_TOKEN` | از @BotFather | برای تازه‌سازی دستورها/وبهوک |
+| `TELEGRAM_WEBHOOK_SECRET` | فقط اگر با سیکرت ورکر **دقیقاً** یکی است | اختیاری |
+
+نکته‌های مهم:
+
+- اگر سیکرت را در تب Variables یا Codespaces بگذارید، Actions آن را نمی‌بیند و job با هشدار «Deploy skipped» رد می‌شود (شکست نمی‌خورد). همان هشدار نام‌هایی را که جست‌وجو شده چاپ می‌کند (`CLOUDFLARE_API_TOKEN`, `CF_API_TOKEN`, `CLOUDFLARE_API_KEY`, `CLOUDFLARE_TOKEN`, `CF_TOKEN`, `CLOUDFLARE_API_TOKEN_V13`, `vars.CLOUDFLARE_API_TOKEN`).
+- `TELEGRAM_WEBHOOK_SECRET` اگر ست نباشد، اسکریپت ثبت وبهوک را **دست نمی‌زند** (تا سیکرت ورکر و تلگرام ناهمخوان نشوند) و فقط دستورهای ربات را به‌روز می‌کند؛ وضعیت وبهوک را از `getWebhookInfo` چاپ می‌کند.
+- پس از استقرار، `https://<PUBLIC_BASE_URL>/healthz` باید `release` مربوط به همان نسخه را نشان دهد؛ این اثر انگشت دیپلوی است و همراه `package.json` بالا می‌رود.
+- هیچ مقدار secret در log چاپ نمی‌شود؛ workflow فقط وجود/عدم‌وجود نام‌ها را گزارش می‌کند.
+
 ## ۳. D1
 
 برای نصب تازه:
