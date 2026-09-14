@@ -72,7 +72,9 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
 
   if (path === "/healthz") {
     const wrongMethod = only(request, ["GET"]);
-    return wrongMethod ?? json({ ok: true, service: "v13-control-plane", version: 13 });
+    // `release` is the deploy fingerprint: it must be bumped together with
+    // package.json so a live probe can prove which build is actually serving.
+    return wrongMethod ?? json({ ok: true, service: "v13-control-plane", version: 13, release: "13.5.2" });
   }
   if (path === "/logo.svg") {
     const wrongMethod = only(request, ["GET"]);

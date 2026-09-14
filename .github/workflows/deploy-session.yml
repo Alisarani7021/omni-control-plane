@@ -1,0 +1,94 @@
+# Deploy the control plane from a long-running Arena session branch, through the
+# same repository secrets the main-branch workflow uses — no credential ever
+# touches chat and main stays untouched.
+#
+# Unlike deploy.yml (push to main), this one is a full pipeline: the whole
+# verification suite must pass first, then migrations + deploy + webhook run.
+#
+# Repo secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN    — Account: Workers Scripts Edit, D1 Edit;
+#                             Zone: Workers Routes Edit, Zone Read
+#   CLOUDFLARE_ACCOUNT_ID   — optional; wrangler.jsonc pins account_id too
+#   TELEGRAM_BOT_TOKEN      — from @BotFather
+#   TELEGRAM_WEBHOOK_SECRET — must match the Worker secret
+# Without CLOUDFLARE_API_TOKEN the deploy job skips with a warning (never fails).
+name: v13-deploy-session
+
+on:
+  push:
+    branches: ["arena/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v13-deploy-session-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+      - run: npm ci
+      - run: npm run preflight
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # CI=true keeps wrangler non-interactive (no confirmation prompts).
+      CI: "true"
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+    steps:
+      - name: Check deployment credentials
+        id: gate
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Deploy skipped::CLOUDFLARE_API_TOKEN is not set in this repository."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+      - if: steps.gate.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Apply D1 migrations
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          npx wrangler d1 migrations apply v13-control-plane --remote
+
+      - name: Deploy worker
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          npx wrangler deploy
+
+      - name: Register Telegram webhook + commands
+        if: steps.gate.outputs.ready == 'true' && env.TELEGRAM_BOT_TOKEN != ''
+        env:
+          PUBLIC_BASE_URL: https://control.nnguts.dpdns.org
+        run: node scripts/set-telegram-webhook.mjs
