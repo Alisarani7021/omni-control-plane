@@ -58,13 +58,20 @@ export function kavehUploadMetadata(plan: Pick<KavehPlan, "agentKey" | "signingS
 
 /** Idempotent D1: reuse a same-named database instead of failing the deploy. */
 export async function findOrCreateD1(auth: CloudflareAuth, accountId: string, name: string): Promise<{ id: string; created: boolean }> {
-  const existing = await cloudflareApi<{ result: { id: string; name: string }[] }>(auth, `/accounts/${accountId}/d1/database?name=${encodeURIComponent(name)}`);
+  const existing = await cloudflareApi<{ result: { id?: string; uuid?: string; name: string }[] }>(auth, `/accounts/${accountId}/d1/database?name=${encodeURIComponent(name)}`);
+  // The D1 list API returns `uuid`; older docs said `id`. Accept both so a
+  // renamed API field can never surface as "undefined" mid-provision.
   const hit = existing.result?.find((d) => d.name === name);
-  if (hit) return { id: hit.id, created: false };
-  const made = await cloudflareApi<{ result: { uuid: string } }>(auth, `/accounts/${accountId}/d1/database`, {
+  if (hit) return { id: hit.uuid ?? hit.id, created: false };
+  const made = await cloudflareApi<{ result: { uuid: string } | null; errors?: { message?: string }[] }>(auth, `/accounts/${accountId}/d1/database`, {
     method: "POST",
     body: JSON.stringify({ name }),
   });
+  if (!made.result) {
+    // Surface the real Cloudflare error (permissions, quota, duplicate name)
+    // instead of a TypeError three frames away from the cause.
+    throw new Error(`D1 create failed: ${(made.errors?.[0]?.message || JSON.stringify(made)).slice(0, 220)}`);
+  }
   return { id: made.result.uuid, created: true };
 }
 
