@@ -2630,7 +2630,7 @@ function omniNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
 }
 
 /** OMNI connect lives in this chat — no V13 dedicated-env page, ever. */
-async function omniConnectView(env: Env, intro?: string): Promise<RenderedView> {
+async function omniConnectView(intro?: string): Promise<RenderedView> {
   return {
     text: [
       intro ?? "🔌 اتصال حساب Cloudflare — فقط برای ساخت نود OMNI روی حساب خودتان",
@@ -2778,7 +2778,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
     if (data === "omni:connect") {
       if (messageId === undefined) return json({ ok: true });
       await answerCallback(env, query.id, "اتصال حساب");
-      await editView(env, chatId, messageId, await omniConnectView(env));
+      await editView(env, chatId, messageId, await omniConnectView());
       return json({ ok: true });
     }
     if (data === "omni:connect:chat") {
@@ -2819,7 +2819,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       const connections = await botListConnections(env, principal);
       const first = connections[0];
       if (!first) {
-        await sendView(env, chatId, await omniConnectView(env));
+        await sendView(env, chatId, await omniConnectView());
         return json({ ok: true });
       }
       try {
@@ -2838,7 +2838,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       } catch (err) {
         const why = err instanceof Error ? err.message : String(err);
         if (/Authentication error|code 10000|rejected|inactive/u.test(why)) {
-          await sendView(env, chatId, await omniConnectView(env, "❌ اتصال Cloudflare قبلی باطل شده (توکن بسته یا منقضی). دوباره در چت وصل کنید:"));
+          await sendView(env, chatId, await omniConnectView("❌ اتصال Cloudflare قبلی باطل شده (توکن بسته یا منقضی). دوباره در چت وصل کنید:"));
         } else {
           await sendView(env, chatId, { text: `❌ ساخت نود شکست: ${why}`, keyboard: omniMainMenuKeyboard(), html: false });
         }
