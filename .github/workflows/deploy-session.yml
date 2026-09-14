@@ -54,10 +54,22 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+      # Read-only presence probe: catches the common mix-up of storing the
+      # credentials on the "Variables" tab (or under a different name).
+      DEPLOY_VAR_CF_TOKEN: ${{ vars.CLOUDFLARE_API_TOKEN }}
+      DEPLOY_VAR_CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      DEPLOY_VAR_TG_TOKEN: ${{ vars.TELEGRAM_BOT_TOKEN }}
     steps:
       - name: Check deployment credentials
         id: gate
         run: |
+          # Presence only — values are never printed, and GitHub masks them anyway.
+          echo "repo=${GITHUB_REPOSITORY} ref=${GITHUB_REF}"
+          echo "secrets: CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:+set}"
+          echo "secrets: CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:+set}"
+          echo "secrets: TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+set}"
+          echo "secrets: TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:+set}"
+          echo "vars-fallback: CLOUDFLARE_API_TOKEN=${DEPLOY_VAR_CF_TOKEN:+set} CLOUDFLARE_ACCOUNT_ID=${DEPLOY_VAR_CF_ACCOUNT:+set} TELEGRAM_BOT_TOKEN=${DEPLOY_VAR_TG_TOKEN:+set}"
           if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning title=Deploy skipped::CLOUDFLARE_API_TOKEN is not set in this repository."
