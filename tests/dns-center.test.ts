@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyAnswers,
   DNS_CANARIES,
@@ -132,7 +132,14 @@ describe("single-slot scanner: replace + bounded ticks", () => {
 });
 
 describe("cron resilience", () => {
+  // The cron fan-out reaches the public RIR registry (30s fetch timeout) and,
+  // on ranges that are due, real TCP/53 probes. A unit test must not depend on
+  // the runner's network: `fetch` is stubbed to fail immediately, so the
+  // geoip stage takes its documented failure path and the rest of the tick —
+  // which is what this test is about — still runs. Without the stub the test
+  // was flaky in CI (vitest's 5s timeout fired while APNIC was still hanging).
   it("keeps scanning DNS ranges even when an earlier cron stage explodes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("network disabled in unit tests"); }));
     const executed: string[] = [];
     const DB = {
       prepare(sql: string) {
@@ -168,5 +175,7 @@ describe("cron resilience", () => {
     const worker = (await import("../src/index")).default;
     await worker.scheduled({ cron: "*/5 * * * *" } as never, env);
     expect(executed.some((sql) => sql.includes("FROM dns_scan_ranges"))).toBe(true);
-  });
+  }, 20_000);
 });
+
+afterEach(() => vi.unstubAllGlobals());
