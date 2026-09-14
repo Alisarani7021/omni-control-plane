@@ -10,15 +10,18 @@
 | در `worker.js` | در V13 | منبع داده |
 |---|---|---|
 | `💎 IP تمیز ULTRA` | `v13:ip` · `/cleanip` | جدول `clean_ip_reports` (گزارش واقعی کلاینت) |
-| `🔍 هلث چک` | `v13:health` · `/health` | `deployments` + `agent_reports` |
+| `🔍 هلث چک` | `v13:check` (رادار) · `v13:health` · `/health` | `clean_ip_reports` + `deployments` + `agent_reports` |
 | `🕷️ نت ملی ULTRA` | `v13:map` · `/map` | جدول `map_reports` (نقشهٔ زندهٔ سانسور) |
 | `🌪️ WhiteHole` | `v13:wh` · `/whitehole` | رکوردهای TXT در zone خود کاربر + `whitehole_drops` |
 | `🎁 اهدا AI` | `v13:donate` · `/donate` | `ai_donations` (+ `ai_donation_secrets` رمزنگاری‌شده) |
 | `📁 دیپلوی‌های من` / `🚀 دیپلوی پنل جدید` | `v13:deps` و ویزارد `wiz:*` | همان مسیر پنل: `deployments` + Workflow |
 | `👥 کاربران` · `📈 مصرف` | `v13:roster` (فقط ادمین) · `v13:usage` · `/usage` | شمارش واقعی D1 |
-| `💻 Cursor/VSCode` | منتقل نشد | V13 هیچ AI Gateway عمومی ندارد؛ آدرس ساختگی تحویل داده نمی‌شود |
-| `👻 PHANTOM 20تایی` | منتقل نشد (به‌جایش `🧭 راهنمای تنظیم کلاینت`) | توضیح در بخش ۴ |
-| `🌪️ تونل DNS (dnstt)` | منتقل نشد | توضیح در بخش ۴ |
+| `💻 Cursor/VSCode` | **حذف کامل** به‌درخواست مالک | کلید، دستور `/cursor` و ویو حذف شدند |
+| `👻 PHANTOM 20تایی` | `v13:pack` (داخل محیط اختصاصی) · `GET /api/v1/pack` | تولید بی‌حالت از `domain + uuid`؛ بدون ذخیره‌سازی |
+| `🌪️ تونل DNS (dnstt)` | بازگردانده شد | `v13:dnstt` · `/dnstt` — ویزارد VPS+دامنه + `GET /api/v1/dnstt/server.sh` (اعتبارسنجی سخت + سقف ۶۰/ساعت) |
+| `🧠 هوش شبکه V13.5` | **حذف کامل UI** به‌درخواست مالک | هاب و کلیدهایش حذف شدند؛ ماژول‌های پس‌زمینه فقط برای مصرف داخلی مرکز DNS/cron باقی‌اند |
+| `🔌 اتصال Cloudflare` | منتقل شد | فقط داخل **محیط اختصاصی** (`v13:conns` در `ENV_CALLBACKS`)؛ در منوی باز نیست |
+| کاتالوگ پنل | محیط اختصاصی خودش | پنل بدون اتصال، توکن اسکوپ‌شده را **در همان چت** می‌گیرد (`panel:token`)؛ اتصال موقت و رمزنگاری‌شده؛ هرگز به محیط اختصاصی نمی‌رود |
 
 دکمه‌های جدید در منوی اصلی، لیبل‌های متنی معادل و دستورهای `/cleanip`، `/map`،
 `/whitehole`، `/donate`، `/health` و `/usage` همگی به `src/telegram.ts` اضافه شده‌اند؛
@@ -103,3 +106,24 @@ npm run test          # tests/clean-ip · censorship-map · whitehole · ai-dona
 npm run preflight     # ممنوعیت توکن سفت‌شده، کوکی legacy، دیپلوی سورس راه دور
 npm run typecheck
 ```
+
+## ۸. افزوده‌های این نسخه (هلث چک، بستهٔ ۲۰تایی، حذف رکورد، راهنمای بخش‌به‌بخش)
+
+- **🔍 هلث چک** (`v13:check`، رایگان و قابل کپی): چند IP از استخر در پنجرهٔ ۷ روزه گزارش
+  زنده دارند (`measured / poolSize`) + ۸ رتبهٔ بالا + لینک JSON. «🔄 تست مجدد» فقط
+  رتبه‌بندی را دوباره از D1 می‌خواند؛ پینگ مستقیم از ورکر عمداً زده نمی‌شود.
+- **👻 PHANTOM ۲۰تایی** (`v13:pack`، داخل محیط اختصاصی چون UUID در پیام می‌آید): دو قدم متن
+  آزاد (`pack:domain` → `pack:uuid`) با همان `telegram_flows`؛ خروجی سه لینک به
+  `GET /api/v1/pack?domain=&uuid=&format=v2ray|clash|singbox|json` است — stateless و هیچ‌چیز
+  در D1 نوشته نمی‌شود. دامنه با `sanitizePackDomain` اعتبارسنجی می‌شود؛ uuid نامعتبر به یک
+  UUID تصادفی تبدیل می‌شود. «🧨 حذف این پیام» برای پاک‌کردن پیام حاوی UUID. لایه‌های جعلی
+  نسخهٔ قبل (Refraction/Geneva/ECH، «۱۱ غول فعال») منتقل نشد؛ خروجی صریحاً می‌گوید
+  «این فقط کانفیگ است، نه تست».
+- **🗑 حذف رکورد استقرار**: در `📁 دیپلوی‌های من` فقط روی رکوردهای `failed`/`revoked`
+  (🟢 نود آماده، ⚪ بقیه، `➕ جدید` بالای لیست) و در صفحهٔ جزئیات. دو مرحله‌ای
+  (`v13:dep-del:` → `v13:dep-del-yes:`)؛ `DELETE`ها در یک `env.DB.batch` روی
+  `agent_reports`/`bootstrap_tokens`/`deployment_secrets`/`deployments` + یک `audit_events`
+  با `deployment.delete`. بقیهٔ وضعیت‌ها `409 deployment_not_deletable` («اول 🛑 ابطال»).
+- **❓ راهنمای بخش‌به‌بخش** (`src/help-topics.ts`): ۱۴ بخش، هر کدام با یک دکمه؛ توضیح در
+  پیام تازه و بدون قفل می‌آید تا قابل کپی باشد. `tests/help-topics.test.ts` سقف طول پیام و
+  معتبربودن `callback_data`ها را نگهبانی می‌کند.

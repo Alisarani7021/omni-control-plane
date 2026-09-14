@@ -1,0 +1,39 @@
+# Deploy profile for bot-provisioned tenant nodes (headless: no [assets]).
+# The v13 control plane uploads dist-headless/kaveh-headless.js with these
+# bindings; the UI for these nodes lives on the control plane itself.
+name = "kaveh-node"
+main = "dist-headless/kaveh-headless.js"
+compatibility_date = "2026-05-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kaveh"
+migrations_dir = "schema"
+
+[[durable_objects.bindings]]
+name = "LEDGER"
+class_name = "Ledger"
+
+[[durable_objects.bindings]]
+name = "GUARD"
+class_name = "Guard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Ledger", "Guard"]
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[vars]
+PANEL_NAME = "Kaveh"
+DEFAULT_QUOTA_GB = "50"
+DEFAULT_EXPIRY_DAYS = "30"
+SUB_PATH_PREFIX = "s"
+FRAGMENT_PRESET = "mci"
+LOG_LEVEL = "info"
+DEBUG_ERRORS = "0"
+
+# Secrets the provisioner must set per tenant:
+#   AGENT_KEY  control-plane channel (src/api/agent.js)
+#   SECRET     optional pinned session signing key

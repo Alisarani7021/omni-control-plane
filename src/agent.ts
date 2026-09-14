@@ -1,7 +1,19 @@
 import { audit, rateLimit } from "./db";
+import {
+  DNSTT_MODULE,
+  DNSTT_PIN,
+  GO_AMD64_SHA256,
+  GO_ARM64_SHA256,
+  GO_VERSION,
+  SLIPSTREAM_LISTEN_PORT,
+  SLIPSTREAM_MODULE,
+  SLIPSTREAM_PIN,
+  TUNNEL_MTU_SIZES,
+} from "./dns-tunnel";
 import { bearerToken, HttpError, json, readJson, secureHeaders } from "./http";
 import { decryptJson, encryptJson, nowIso, sha256 } from "./security";
-import { assertAgentCompletePayload } from "./validation";
+import { beaconRecordName, SLEEPER_DEFAULT_ANCHOR_HOUR } from "./sleeper";
+import { assertAgentCompletePayload, extractAgentReportExtras } from "./validation";
 import type { DeploymentRow, Env, SecretBundle } from "./types";
 
 const SING_BOX_AMD64_SHA256 = "2375de6999f4f56ab46b4fc5ddf26a6aba1d3e61a0f4e7ddec2f4690457d5f63";
@@ -22,6 +34,9 @@ BOOTSTRAP_TOKEN=__BOOTSTRAP_TOKEN__
 NODE_HOSTNAME=__NODE_HOSTNAME__
 REALITY_SERVER_NAME=__REALITY_SERVER_NAME__
 ENABLE_UFW=__ENABLE_UFW__
+DNS_TUNNEL=__DNS_TUNNEL__
+NODE_ROLE=__NODE_ROLE__
+TUNNEL_DOMAIN=__TUNNEL_DOMAIN__
 VERSION=1.14.0
 MARKER=/var/lib/v13-agent/bootstrap-complete
 
@@ -336,10 +351,330 @@ WantedBy=timers.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now v13-health-report.timer
+if [ "$NODE_ROLE" = "sleeper" ]; then
+  # Sleeper nodes stay silent: no periodic health timer; the daily beacon
+  # window (v13-sleeper.timer below) is the only contact with the control plane.
+  systemctl disable v13-health-report.timer >/dev/null 2>&1 || true
+else
+  systemctl enable --now v13-health-report.timer
+fi
+
+if [ "$DNS_TUNNEL" = "1" ] && [ -n "$TUNNEL_DOMAIN" ]; then
+  # --- DNS tunnel servers (dnstt + slipstream) on the user's OWN VPS ---
+  # Keypairs are generated here and never leave; only public material is
+  # reported back in the complete payload.
+  install -d -o root -g root -m 0700 /etc/v13-tunnel
+  go_new_enough() {
+    command -v go >/dev/null 2>&1 || return 1
+    minor=$(go version 2>/dev/null | awk '{print $3}' | sed 's/^go//' | cut -d. -f2)
+    [ "\${minor:-0}" -ge 22 ]
+  }
+  if ! go_new_enough; then
+    case "$(uname -m)" in
+      x86_64|amd64) GO_SHA=__GO_AMD64_SHA__ ;;
+      aarch64|arm64) GO_SHA=__GO_ARM64_SHA__ ;;
+      *) fail "Unsupported architecture for pinned Go toolchain" ;;
+    esac
+    curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 --retry 3 \
+      "https://go.dev/dl/go__GO_VERSION__.linux-$ARCH.tar.gz" -o "$TMP_DIR/go.tgz"
+    printf '%s  %s\n' "$GO_SHA" "$TMP_DIR/go.tgz" | sha256sum --check --status || fail "Go toolchain SHA-256 mismatch"
+    tar -C /usr/local -xzf "$TMP_DIR/go.tgz"
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  fi
+  export PATH="$PATH:/root/go/bin"
+  go install __DNSTT_MODULE__/dnstt-server@__DNSTT_PIN__ || fail "dnstt-server install failed (module proxy/checksum db enforced)"
+  go install __SLIPSTREAM_MODULE__/cmd/slipstream-server@__SLIPSTREAM_PIN__ || fail "slipstream-server install failed (module proxy/checksum db enforced)"
+  install -m 0755 "/root/go/bin/dnstt-server" /usr/local/bin/dnstt-server
+  install -m 0755 "/root/go/bin/slipstream-server" /usr/local/bin/slipstream-server
+  { go version -m /usr/local/bin/dnstt-server; go version -m /usr/local/bin/slipstream-server; } > /var/lib/v13-agent/tunnel-pins.txt 2>/dev/null || true
+
+  # Local proxy target shared by both tunnel servers: a sing-box client
+  # instance reusing this node's own credentials (mixed inbound on loopback).
+  python3 - <<'PY'
+import json, os
+config = {
+    "log": {"level": "warn", "timestamp": True},
+    "inbounds": [{"type": "mixed", "tag": "tunnel-mixed", "listen": "127.0.0.1", "listen_port": 1080}],
+    "outbounds": [{
+        "type": "vless",
+        "tag": "out",
+        "server": os.environ["NODE_HOSTNAME"],
+        "server_port": int(os.environ["VLESS_PORT"]),
+        "uuid": os.environ["VLESS_UUID"],
+        "flow": "xtls-rprx-vision",
+        "tls": {
+            "enabled": True,
+            "server_name": os.environ["REALITY_SERVER_NAME"],
+            "reality": {
+                "enabled": True,
+                "public_key": os.environ["REALITY_PUBLIC_KEY"],
+                "short_id": os.environ["REALITY_SHORT_ID"]
+            },
+            "utls": {"enabled": True, "fingerprint": "chrome"}
+        }
+    }]
+}
+with open("/etc/sing-box/client.json.new", "w", encoding="utf-8") as handle:
+    json.dump(config, handle, indent=2)
+    handle.write("\n")
+PY
+  chmod 0640 /etc/sing-box/client.json.new
+  chown root:sing-box /etc/sing-box/client.json.new
+  /usr/local/bin/sing-box check -c /etc/sing-box/client.json.new || fail "Tunnel client configuration failed sing-box check"
+  mv /etc/sing-box/client.json.new /etc/sing-box/client.json
+
+  cat >/etc/systemd/system/sing-box-client.service <<'UNIT'
+[Unit]
+Description=sing-box loopback proxy for V13 DNS tunnels
+After=network-online.target
+
+[Service]
+Type=simple
+User=sing-box
+Group=sing-box
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/client.json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sing-box
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  if [ ! -s /etc/v13-tunnel/dnstt.keys ]; then
+    /usr/local/bin/dnstt-server -gen-key > /etc/v13-tunnel/dnstt.keys || fail "dnstt keygen failed"
+    chmod 0600 /etc/v13-tunnel/dnstt.keys
+  fi
+  DNSTT_PRIV=$(awk '$1 == "privkey" {print $2}' /etc/v13-tunnel/dnstt.keys)
+  DNSTT_PUB=$(awk '$1 == "pubkey" {print $2}' /etc/v13-tunnel/dnstt.keys)
+  [ -n "$DNSTT_PRIV" ] && [ -n "$DNSTT_PUB" ] || fail "dnstt keypair incomplete"
+  if [ ! -s /etc/v13-tunnel/slipstream.crt ]; then
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -sha256 -nodes -days 3650 \
+      -subj "/CN=$TUNNEL_DOMAIN" -addext "subjectAltName=DNS:$TUNNEL_DOMAIN" \
+      -keyout /etc/v13-tunnel/slipstream.key -out /etc/v13-tunnel/slipstream.crt >/dev/null 2>&1
+    chmod 0600 /etc/v13-tunnel/slipstream.key
+  fi
+  SLIPSTREAM_SPKI=$(openssl x509 -in /etc/v13-tunnel/slipstream.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | openssl base64 -A)
+  export DNSTT_PUB SLIPSTREAM_SPKI
+
+  cat >/etc/systemd/system/dnstt-server.service <<UNIT
+[Unit]
+Description=dnstt DNS tunnel server (authoritative for $TUNNEL_DOMAIN)
+After=network-online.target sing-box-client.service
+Wants=sing-box-client.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dnstt-server -udp :53 -privkey $DNSTT_PRIV $TUNNEL_DOMAIN 127.0.0.1:1080
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# Authoritative-only tunnel: no recursion, no ANY, kernel-level rate limit.
+LimitNPROC=64
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  cat >/etc/systemd/system/slipstream-server.service <<UNIT
+[Unit]
+Description=slipstream QUIC-over-DNS server for $TUNNEL_DOMAIN
+After=network-online.target sing-box-client.service
+Wants=sing-box-client.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/slipstream-server -l 0.0.0.0:__SLIPSTREAM_PORT__ -t 127.0.0.1:1080 -d $TUNNEL_DOMAIN -c /etc/v13-tunnel/slipstream.crt -k /etc/v13-tunnel/slipstream.key
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
+    ufw allow 53/udp
+    ufw allow __SLIPSTREAM_PORT__/udp
+  fi
+  systemctl daemon-reload
+  systemctl enable --now sing-box-client.service dnstt-server.service slipstream-server.service
+
+  # One honest tunnel report: measured MTU + TXT round-trip + PUBLIC key
+  # material only. Private keys stay on the VPS forever.
+  sleep 2
+  export PROBE_JSON
+  PROBE_JSON=$(/usr/local/libexec/v13-mtu-probe.py 2>/dev/null || printf '{}')
+  python3 - <<'PY'
+import json, os
+probe = json.loads(os.environ.get("PROBE_JSON") or "{}")
+payload = {
+    "deploymentId": os.environ["DEPLOYMENT_ID"],
+    "status": "healthy",
+    "singBoxVersion": os.environ["VERSION"],
+    "serviceActive": True,
+    "configSha256": os.environ["CONFIG_SHA"],
+    "dnsttPublicKey": os.environ.get("DNSTT_PUB", ""),
+    "slipstreamSpkiSha256": os.environ.get("SLIPSTREAM_SPKI", ""),
+    "tunnelStatus": "active",
+}
+if probe.get("mtu"):
+    payload["mtuBytes"] = probe["mtu"]
+if probe.get("txt_rtt_ms") is not None:
+    payload["tunnelTxtRttMs"] = probe["txt_rtt_ms"]
+with open("/var/lib/v13-agent/tunnel-report.json", "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+  curl --fail --show-error --silent --proto '=https' --tlsv1.2 --retry 4 \
+    -H "Authorization: Bearer $AGENT_TOKEN" \
+    -H 'Content-Type: application/json' \
+    --data-binary @/var/lib/v13-agent/tunnel-report.json \
+    "$CONTROL_URL/api/v1/agent/report" >/dev/null || true
+  shred -u /var/lib/v13-agent/tunnel-report.json 2>/dev/null || rm -f /var/lib/v13-agent/tunnel-report.json
+fi
+
+# MTU + TXT round-trip probe through the national path (five sizes, honest
+# winner per deployment; results ride the health report, never fabricated).
+cat >/usr/local/libexec/v13-mtu-probe.py <<'PY'
+#!/usr/bin/env python3
+import json, os, random, socket, struct, time
+from pathlib import Path
+SIZES = __MTU_SIZES__
+domain = os.environ.get("TUNNEL_DOMAIN") or "example.com"
+resolver = ("178.22.122.100", 53)
+def probe(size):
+    label = ("p" * max(1, size - 40))[:63]
+    name = f"{label}.{random.randint(0, 999999)}.{domain}"
+    packet = struct.pack(">HHHHHH", random.randint(0, 65535), 0x0100, 1, 0, 0, 0)
+    packet += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00" + struct.pack(">HH", 16, 1)
+    started = time.monotonic()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(3)
+            sock.sendto(packet, resolver)
+            sock.recv(4096)
+        return int((time.monotonic() - started) * 1000)
+    except OSError:
+        return None
+winner, rtts = None, []
+for size in SIZES:
+    rtt = probe(size)
+    if rtt is not None:
+        winner = size
+        rtts.append(rtt)
+rtt = sorted(rtts)[len(rtts) // 2] if rtts else None
+print(json.dumps({"mtu": winner, "txt_rtt_ms": rtt}))
+PY
+chmod 0750 /usr/local/libexec/v13-mtu-probe.py
+export TUNNEL_DOMAIN
+
+if [ "$NODE_ROLE" = "sleeper" ]; then
+  # Daily read-only beacon window; the only contact of a sleeper node.
+  cat >/usr/local/libexec/v13-sleeper.py <<'PY'
+#!/usr/bin/env python3
+import hashlib, json, os, socket, struct, subprocess, time
+from pathlib import Path
+LOG = Path("/var/lib/v13-agent/sleeper.log")
+LOG.parent.mkdir(parents=True, exist_ok=True)
+def fnv1a(text):
+    h = 0x811C9DC5
+    for ch in text.encode():
+        h = (h ^ ch) * 0x01000193 & 0xFFFFFFFF
+    return h
+day = time.strftime("%Y-%m-%d", time.gmtime())
+deployment = ""
+for line in Path("/etc/v13-agent.env").read_text(encoding="utf-8").splitlines():
+    if line.startswith("DEPLOYMENT_ID="):
+        deployment = line.split("=", 1)[1]
+anchor = int(os.environ.get("SLEEPER_ANCHOR_HOUR", "3"))
+jitter = (fnv1a(f"{deployment}|{day}") % 19) - 9
+start = (anchor * 60 + jitter) % 1440
+now = (time.gmtime().tm_hour * 60 + time.gmtime().tm_min) % 1440
+in_window = start <= now < (start + 60) % 1440 or (start + 60 > 1440 and now < (start + 60) % 1440)
+def log(line):
+    with LOG.open("a", encoding="utf-8") as handle:
+        handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {line}\n")
+if not in_window:
+    log("sleep (outside window)")
+    raise SystemExit(0)
+beacon = os.environ.get("BEACON_NAME", "")
+cmd = "none"
+if beacon:
+    query = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+    query += b"".join(bytes([len(p)]) + p.encode() for p in beacon.split(".")) + b"\x00" + struct.pack(">HH", 16, 1)
+    for resolver in ("178.22.122.100", "127.0.0.53"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(4)
+                sock.sendto(query, (resolver, 53))
+                data = sock.recv(4096)
+            text = data[12:].decode("latin-1")
+            if "v13b1" in text:
+                parts = text.split("v13b1", 1)[1].split()
+                cmd = parts[3] if len(parts) > 3 else "none"
+            break
+        except OSError:
+            continue
+log(f"window wake beacon={beacon} cmd={cmd}")
+if cmd == "report-now":
+    subprocess.run(["/usr/local/libexec/v13-health-report.py"], check=False)
+    log("executed report-now")
+elif cmd == "wake":
+    subprocess.run(["systemctl", "enable", "--now", "v13-health-report.timer"], check=False)
+    log("executed wake (periodic reports re-enabled)")
+PY
+  chmod 0750 /usr/local/libexec/v13-sleeper.py
+  cat >/etc/systemd/system/v13-sleeper.service <<'UNIT'
+[Unit]
+Description=V13 sleeper beacon check
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/v13-sleeper.env
+ExecStart=/usr/local/libexec/v13-sleeper.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/v13-agent
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UNIT
+  cat >/etc/systemd/system/v13-sleeper.timer <<'UNIT'
+[Unit]
+Description=Check the V13 sleeper beacon window hourly
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+  cat >/etc/v13-sleeper.env <<EOF
+BEACON_NAME=__BEACON_NAME__
+SLEEPER_ANCHOR_HOUR=__SLEEPER_ANCHOR_HOUR__
+EOF
+  chmod 0600 /etc/v13-sleeper.env
+  systemctl daemon-reload
+  systemctl enable --now v13-sleeper.timer
+fi
+
 install -m 0600 /dev/null "$MARKER"
 printf '\nV13 bootstrap completed. The control plane is finalizing the private subscription.\n'
 `;
+  const tunnelDomain = deployment.dns_tunnel_enabled === 1 ? (deployment.tunnel_hostname ?? "") : "";
   return template
     .replaceAll("__CONTROL_URL__", shellQuote(new URL(env.PUBLIC_BASE_URL).origin))
     .replaceAll("__DEPLOYMENT_ID__", shellQuote(deployment.id))
@@ -348,7 +683,21 @@ printf '\nV13 bootstrap completed. The control plane is finalizing the private s
     .replaceAll("__REALITY_SERVER_NAME__", shellQuote(deployment.reality_server_name))
     .replaceAll("__ENABLE_UFW__", shellQuote(deployment.enable_ufw === 1 ? "1" : "0"))
     .replaceAll("__AMD64_SHA__", shellQuote(SING_BOX_AMD64_SHA256))
-    .replaceAll("__ARM64_SHA__", shellQuote(SING_BOX_ARM64_SHA256));
+    .replaceAll("__ARM64_SHA__", shellQuote(SING_BOX_ARM64_SHA256))
+    .replaceAll("__DNS_TUNNEL__", shellQuote(deployment.dns_tunnel_enabled === 1 ? "1" : "0"))
+    .replaceAll("__NODE_ROLE__", shellQuote(deployment.role === "sleeper" ? "sleeper" : "standard"))
+    .replaceAll("__TUNNEL_DOMAIN__", shellQuote(tunnelDomain))
+    .replaceAll("__GO_VERSION__", GO_VERSION)
+    .replaceAll("__GO_AMD64_SHA__", shellQuote(GO_AMD64_SHA256))
+    .replaceAll("__GO_ARM64_SHA__", shellQuote(GO_ARM64_SHA256))
+    .replaceAll("__DNSTT_MODULE__", DNSTT_MODULE)
+    .replaceAll("__DNSTT_PIN__", DNSTT_PIN)
+    .replaceAll("__SLIPSTREAM_MODULE__", SLIPSTREAM_MODULE)
+    .replaceAll("__SLIPSTREAM_PIN__", SLIPSTREAM_PIN)
+    .replaceAll("__SLIPSTREAM_PORT__", String(SLIPSTREAM_LISTEN_PORT))
+    .replaceAll("__MTU_SIZES__", JSON.stringify([...TUNNEL_MTU_SIZES]))
+    .replaceAll("__BEACON_NAME__", shellQuote(beaconRecordName(deployment)))
+    .replaceAll("__SLEEPER_ANCHOR_HOUR__", String(deployment.sleeper_anchor_hour ?? SLEEPER_DEFAULT_ANCHOR_HOUR));
 }
 
 async function getBootstrapRecord(env: Env, request: Request): Promise<{ deployment: DeploymentRow; token: string }> {
@@ -469,14 +818,31 @@ export async function receiveAgentReport(request: Request, env: Env): Promise<Re
   }
   const allowed = await rateLimit(env, `agent-report:${deployment.id}`, 12, 60);
   if (!allowed) throw new HttpError(429, "rate_limited", "Too many reports");
+  const extras = extractAgentReportExtras(body as Record<string, unknown>);
+  const raw = body as Record<string, unknown>;
+  const dnsttPublicKey =
+    typeof raw.dnsttPublicKey === "string" && /^[0-9a-f]{64}$/u.test(raw.dnsttPublicKey) ? raw.dnsttPublicKey : null;
+  const slipstreamSpki =
+    typeof raw.slipstreamSpkiSha256 === "string" && /^[A-Za-z0-9+/]{43}=$/u.test(raw.slipstreamSpkiSha256) ? raw.slipstreamSpkiSha256 : null;
   const now = nowIso();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO agent_reports (deployment_id, status, sing_box_version, service_active, config_sha256, reported_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).bind(deployment.id, body.status, body.singBoxVersion, body.serviceActive ? 1 : 0, body.configSha256, now),
-    env.DB.prepare("UPDATE deployments SET last_seen_at = ?, updated_at = ? WHERE id = ?")
-      .bind(now, now, deployment.id),
+      `INSERT INTO agent_reports
+        (deployment_id, status, sing_box_version, service_active, config_sha256, mtu_bytes, tunnel_txt_rtt_ms, tunnel_status, reported_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      deployment.id, body.status, body.singBoxVersion, body.serviceActive ? 1 : 0, body.configSha256,
+      extras.mtuBytes, extras.tunnelTxtRttMs, extras.tunnelStatus, now,
+    ),
+    env.DB.prepare(
+      `UPDATE deployments SET
+         last_seen_at = ?,
+         updated_at = ?,
+         tunnel_mtu = COALESCE(?, tunnel_mtu),
+         dnstt_public_key = COALESCE(?, dnstt_public_key),
+         slipstream_spki_sha256 = COALESCE(?, slipstream_spki_sha256)
+       WHERE id = ?`,
+    ).bind(now, now, extras.mtuBytes, dnsttPublicKey, slipstreamSpki, deployment.id),
   ]);
   return json({ ok: true });
 }

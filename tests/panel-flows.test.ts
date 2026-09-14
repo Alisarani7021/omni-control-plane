@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   clearPanelFlow,
+  FLOW_STEP_PACK_DOMAIN,
+  FLOW_STEP_PACK_UUID,
   flowPrompt,
   loadPanelFlow,
   processPanelFlowText,
@@ -50,6 +52,31 @@ function flowEnv(row?: Row): { env: Env; captured: Captured[]; store: Map<string
   };
   return { env: { DB } as unknown as Env, captured, store };
 }
+
+describe("phantom pack flow", () => {
+  it("collects the domain, then returns links without storing the pack", async () => {
+    const { env, store, captured } = flowEnv();
+    const flow = { flow: "pack" as const, step: FLOW_STEP_PACK_DOMAIN, data: {} };
+    const first = await processPanelFlowText(env, "555", "tenant", flow, "https://Example.com/x");
+    expect(first.kind).toBe("prompt");
+    expect(store.get("555")?.step).toBe(FLOW_STEP_PACK_UUID);
+
+    const rejected = await processPanelFlowText(env, "555", "tenant", { flow: "pack", step: FLOW_STEP_PACK_DOMAIN, data: {} }, "not a domain");
+    expect(rejected.kind).toBe("prompt");
+    expect(rejected.text).toContain("دامنهٔ معتبر نیست");
+
+    const packEnv = { ...env, PUBLIC_BASE_URL: "https://control.example.com/" } as typeof env;
+    const done = await processPanelFlowText(packEnv, "555", "tenant", flow, "new");
+    expect(done.kind).toBe("done");
+    expect(done.text).toContain("https://control.example.com/api/v1/pack?domain=example.com");
+    expect(done.text).toContain("format=clash");
+    expect(done.text).toContain("format=singbox");
+    expect(done.text).toContain("این فقط کانفیگ است، نه تست");
+    expect(store.size).toBe(0);
+    // No pack row is ever written: the only statements are the flow upsert/clear.
+    expect(captured.every((item) => item.sql.includes("telegram_flows"))).toBe(true);
+  });
+});
 
 describe("panel flow store", () => {
   it("round-trips the active step and expires stale conversations", async () => {

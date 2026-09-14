@@ -24,6 +24,15 @@ const deployment: DeploymentRow = {
   last_seen_at: null,
   created_at: "2026-09-10T00:00:00.000Z",
   updated_at: "2026-09-10T00:00:00.000Z",
+  role: "standard",
+  dns_tunnel_enabled: 0,
+  tunnel_hostname: null,
+  dnstt_public_key: null,
+  slipstream_spki_sha256: null,
+  tunnel_mtu: null,
+  sleeper_anchor_hour: null,
+  sleeper_consented_at: null,
+  beacon_published_at: null,
 };
 
 const principal: SessionPrincipal = {
@@ -100,7 +109,7 @@ describe("subscription credential rotation", () => {
       }),
       batch: async () => [],
     };
-    const env = { DB, TOKEN_ENCRYPTION_KEY: key } as unknown as Env;
+    const env = { DB, TOKEN_ENCRYPTION_KEY: key, PUBLIC_BASE_URL: "https://control.example.com" } as unknown as Env;
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ success: true, result: {} }));
     vi.stubGlobal("fetch", fetchMock);
 

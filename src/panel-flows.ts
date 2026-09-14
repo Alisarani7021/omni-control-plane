@@ -1,8 +1,14 @@
 import { createDonation } from "./ai-donate";
+import { buildPhantomPack, packLinkText, sanitizePackDomain } from "./phantom-pack";
 import { recordCleanIpReport, type CleanIpReport } from "./clean-ip";
 import { recordMapReport, type MapReport } from "./censorship-map";
 import { HttpError } from "./http";
-import { addSecondsIso, nowIso } from "./security";
+import {
+  isValidVpsIpv4,
+  normalizeDnsttDomain,
+  renderDnsttPackageText,
+} from "./dnstt";
+import { addSecondsIso, nowIso, normalizeBaseUrl } from "./security";
 import type { Env, TelegramInlineKeyboard } from "./types";
 
 /**
@@ -13,7 +19,7 @@ import type { Env, TelegramInlineKeyboard } from "./types";
 
 export const PANEL_FLOW_TTL_SECONDS = 900;
 
-export type PanelFlowKind = "rum" | "map" | "donate";
+export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel" | "dnsrange" | "white" | "slipcfg" | "dnstt" | "omni";
 
 export const FLOW_STEP_RUM_PING = "rum:ping";
 export const FLOW_STEP_RUM_LOSS = "rum:loss";
@@ -23,6 +29,14 @@ export const FLOW_STEP_MAP_VERDICT = "map:verdict";
 export const FLOW_STEP_MAP_CITY = "map:city";
 export const FLOW_STEP_MAP_RTT = "map:rtt";
 export const FLOW_STEP_DONATE_KEY = "donate:key";
+export const FLOW_STEP_PACK_DOMAIN = "pack:domain";
+export const FLOW_STEP_PACK_UUID = "pack:uuid";
+export const FLOW_STEP_PANEL_TOKEN = "panel:token";
+export const FLOW_STEP_OMNI_TOKEN = "omni:token";
+export const FLOW_STEP_PANEL_NAME = "panel:name";
+export const FLOW_STEP_PANEL_PASS = "panel:pass";
+export const FLOW_STEP_DNSTT_VPS = "dnstt:vps";
+export const FLOW_STEP_DNSTT_DOMAIN = "dnstt:domain";
 
 /** Steps where the answer must come from an inline button, not from text. */
 export const BUTTON_ONLY_STEPS: readonly string[] = [
@@ -43,7 +57,10 @@ export function panelFlowKeyboard(): TelegramInlineKeyboard {
 }
 
 function isFlowKind(value: string): value is PanelFlowKind {
-  return value === "rum" || value === "map" || value === "donate";
+  return (
+    value === "rum" || value === "map" || value === "donate" || value === "pack" || value === "panel" ||
+    value === "dnsrange" || value === "white" || value === "slipcfg" || value === "dnstt" || value === "omni"
+  );
 }
 
 export async function loadPanelFlow(env: Env, telegramUserId: string): Promise<PanelFlow | null> {
@@ -79,7 +96,37 @@ export async function clearPanelFlow(env: Env, telegramUserId: string): Promise<
   await env.DB.prepare("DELETE FROM telegram_flows WHERE telegram_user_id = ?").bind(telegramUserId).run();
 }
 
+export const FLOW_STEP_DNS_RANGE = "dnsrange:cidr";
+export const FLOW_STEP_WHITE_DOMAINS = "white:domains";
+
 export function flowPrompt(flow: PanelFlow): string {
+  if (flow.flow === "dnsrange") {
+    return [
+      "🔎 <b>رنج اسکن DNS سالم</b>",
+      "",
+      "یک IPv4 تکی یا CIDR بین /24 تا /32 بفرستید (حداکثر ۲۵۶ آدرس).",
+      "مثال: 178.22.122.0/24 یا 1.1.1.1",
+      "اسکن هر ۳۰ دقیقه خودکار تکرار می‌شود و یافته‌های تازه روی کارت می‌نشیند.",
+    ].join("\n");
+  }
+  if (flow.flow === "slipcfg") {
+    return [
+      "🌊 <b>کانفیگ Slipstream</b>",
+      "",
+      "در یک خط بفرستید: «دامنهٔ تونل  کلید عمومی  MTU» (MTU اختیاری، پیش‌فرض 1180).",
+      "مثال: t.example.com 9d8f7c6b5a4f… 1180",
+      "خروجی: خط slipnet:// آمادهٔ paste در اپ SlipNet.",
+    ].join("\n");
+  }
+  if (flow.flow === "white") {
+    return [
+      "🛡️ <b>دامنه‌های لیست سفید White DNS</b>",
+      "",
+      "دامنه‌ها را با ویرگول جدا بفرستید (حداکثر ۴۰ عدد). این لیست به‌صورت رکورد TXT خواندنی",
+      "در zone شما منتشر می‌شود و در کانفیگ، مسیر این دامنه‌ها روی DoH خودتان می‌افتد.",
+      "مثال: aparat.com,digikala.com",
+    ].join("\n");
+  }
   if (BUTTON_ONLY_STEPS.includes(flow.step)) {
     return "لطفاً با دکمه‌هایی که ربات فرستاده انتخاب کنید 👇 (این قدم با متن آزاد پاسخ داده نمی‌شود)";
   }
@@ -103,6 +150,55 @@ export function flowPrompt(flow: PanelFlow): string {
         "🗺 آخرین قدم",
         "",
         "میانهٔ پینگ به میلی‌ثانیه بفرستید یا «-» اگر اندازه نگرفتید.",
+      ].join("\n");
+    case FLOW_STEP_PACK_DOMAIN:
+      return [
+        "👻 قدم ۱ از ۲ — دامنه",
+        "",
+        "دامنهٔ سرور را فقط به شکل <code>example.com</code> بفرستید (بدون http و بدون پورت).",
+        "برای انصراف دکمهٔ پایین را بزنید.",
+      ].join("\n");
+    case FLOW_STEP_PACK_UUID:
+      return [
+        "👻 قدم ۲ از ۲ — UUID",
+        "",
+        "UUID خودتان را بفرستید، یا <code>new</code> تا یک UUID تازه بسازم.",
+        "هیچ‌چیز در سرور ذخیره نمی‌شود؛ بسته هر بار از همین دو مقدار ساخته می‌شود.",
+      ].join("\n");
+    case FLOW_STEP_PANEL_TOKEN:
+      return [
+        `🔑 <b>${String(flow.data["panel_name"] ?? "پنل").slice(0, 30)}</b> — اتصال اختصاصی خودِ پنل`,
+        "",
+        "۱) روی دکمهٔ «☁️ ساخت Token آمادهٔ پنل» بزن: صفحهٔ Cloudflare با همهٔ دسترسی‌های لازمِ این پنل از قبل چیده‌شده باز می‌شود.",
+        "۲) فقط در بخش Zone Resources یک zone مشخص انتخاب کن، بعد Continue و Create Token و Copy.",
+        "۳) توکن را همین‌جا بفرست؛ بلافاصله رمزنگاری می‌شود، فقط برای همین استقرار استفاده می‌شود و اتصال موقت خودش منقضی و حذف می‌شود.",
+      ].join("\n");
+    case FLOW_STEP_PANEL_NAME:
+      return [
+        "🚀 قدم ۱ از ۲ — نام Worker",
+        "",
+        "نام ورکر را بفرستید: حرف کوچک انگلیسی، عدد و خط‌تیره، حداقل ۳ نویسه.",
+        "مثال: <code>my-bpb</code>",
+      ].join("\n");
+    case FLOW_STEP_PANEL_PASS:
+      return [
+        "🚀 قدم ۲ از ۲ — رمز پنل",
+        "",
+        "رمز ورود پنل را بفرستید (حداقل ۴ نویسه). این رمز در دیتابیس ذخیره نمی‌شود.",
+      ].join("\n");
+    case FLOW_STEP_DNSTT_VPS:
+      return [
+        "🌪️ <b>تونل DNS با dnstt</b>",
+        "",
+        "👇 <b>اول IP عددی VPS رو بفرست:</b>",
+        "مثال: <code>203.0.113.2</code>",
+      ].join("\n");
+    case FLOW_STEP_DNSTT_DOMAIN:
+      return [
+        `✅ VPS: <code>${flow.data["vps"] ?? ""}</code>`,
+        "",
+        "حالا ساب‌دامنهٔ تونل را بفرست (NS آن باید به VPS داده شود):",
+        "مثال: <code>t.yourdomain.ir</code>",
       ].join("\n");
     case FLOW_STEP_DONATE_KEY:
       return [
@@ -188,6 +284,27 @@ export async function processPanelFlowText(
           saved: true,
         };
       }
+      case FLOW_STEP_PACK_DOMAIN: {
+        const domain = sanitizePackDomain(text);
+        if (!domain) {
+          return { kind: "prompt", text: `دامنهٔ معتبر نیست. فقط شکلی مثل <code>example.com</code> پذیرفته می‌شود.\n\n${flowPrompt(flow)}` };
+        }
+        flow.step = FLOW_STEP_PACK_UUID;
+        flow.data = { ...flow.data, domain };
+        await savePanelFlow(env, telegramUserId, flow);
+        return { kind: "prompt", text: flowPrompt(flow) };
+      }
+      case FLOW_STEP_PACK_UUID: {
+        const domain = sanitizePackDomain(flow.data["domain"] ?? "");
+        if (!domain) {
+          await clearPanelFlow(env, telegramUserId);
+          return { kind: "done", text: "فرایند نیمه‌کاره منقضی شد؛ از اول شروع کنید." };
+        }
+        const pack = buildPhantomPack(domain, text);
+        await clearPanelFlow(env, telegramUserId);
+        const base = `${(env.PUBLIC_BASE_URL ?? "").replace(/\/+$/u, "")}/api/v1/pack`;
+        return { kind: "done", text: packLinkText(pack, base) };
+      }
       case FLOW_STEP_MAP_RTT: {
         const rtt = parseNumberOrDash(text, 10_000);
         if (rtt === "invalid") {
@@ -219,6 +336,33 @@ export async function processPanelFlowText(
             "🔐 کلید در D1 رمزنگاری شد؛ برای حذف فوری به «🎁 کلیدهای من» بروید. توصیه می‌شود کلید اهدایی را در سرویس مبدأ هم محدود/گردش کنید.",
           ].join("\n"),
           followUp: "donations",
+          saved: true,
+        };
+      }
+      case FLOW_STEP_DNSTT_VPS: {
+        const vps = text.trim();
+        if (!isValidVpsIpv4(vps)) {
+          return { kind: "prompt", text: `⚠️ IP معتبر نیست. مثال: <code>203.0.113.2</code>\n\n${flowPrompt(flow)}` };
+        }
+        flow.step = FLOW_STEP_DNSTT_DOMAIN;
+        flow.data = { ...flow.data, vps };
+        await savePanelFlow(env, telegramUserId, flow);
+        return { kind: "prompt", text: flowPrompt(flow) };
+      }
+      case FLOW_STEP_DNSTT_DOMAIN: {
+        const vps = flow.data["vps"] ?? "";
+        if (!isValidVpsIpv4(vps)) {
+          await clearPanelFlow(env, telegramUserId);
+          return { kind: "done", text: "فرایند منقضی شد؛ از اول شروع کنید." };
+        }
+        const domain = normalizeDnsttDomain(text);
+        if (!domain) {
+          return { kind: "prompt", text: `⚠️ دامنه معتبر نیست. مثال: <code>t.example.ir</code>\n\n${flowPrompt(flow)}` };
+        }
+        await clearPanelFlow(env, telegramUserId);
+        return {
+          kind: "done",
+          text: renderDnsttPackageText(vps, domain, normalizeBaseUrl(env.PUBLIC_BASE_URL)),
           saved: true,
         };
       }

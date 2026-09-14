@@ -129,7 +129,10 @@ export class ProvisionWorkflow extends WorkflowEntrypoint<Env, WorkflowParams> {
       const auth = await getValidCloudflareAuth(this.env, connection);
       await uploadWorkerScript(auth, current.account_id, current.worker_name, DATA_PLANE_SOURCE, {
         SUB_TOKEN_HASH: current.subscription_token_hash,
-        CONFIG_BUNDLE: JSON.stringify(buildReadyBundle(current, secrets)),
+        CONFIG_BUNDLE: JSON.stringify(buildReadyBundle(current, secrets, {
+          subscriptionToken: secrets.subscriptionToken,
+          controlOrigin: new URL(this.env.PUBLIC_BASE_URL).origin,
+        })),
       });
       return { sourceSha256: await sha256(DATA_PLANE_SOURCE), protocols: ["vless-reality", "hysteria2"] };
     });

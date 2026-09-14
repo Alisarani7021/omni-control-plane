@@ -23,6 +23,15 @@ const deployment: DeploymentRow = {
   last_seen_at: null,
   created_at: "2026-09-09T00:00:00.000Z",
   updated_at: "2026-09-09T00:00:00.000Z",
+  role: "standard",
+  dns_tunnel_enabled: 0,
+  tunnel_hostname: null,
+  dnstt_public_key: null,
+  slipstream_spki_sha256: null,
+  tunnel_mtu: null,
+  sleeper_anchor_hour: null,
+  sleeper_consented_at: null,
+  beacon_published_at: null,
 };
 
 const env = {
@@ -93,4 +102,57 @@ describe("VPS bootstrap", () => {
     expect(script).not.toContain("| head");
   });
 
+});
+
+describe("DNS tunnel + sleeper bootstrap units", () => {
+  const tunnelDeployment: DeploymentRow = {
+    ...deployment,
+    dns_tunnel_enabled: 1,
+    tunnel_hostname: "t.example.com",
+    role: "sleeper",
+    sleeper_anchor_hour: 3,
+  };
+  const tunnelScript = renderBootstrapScript(env, tunnelDeployment, "B".repeat(43));
+  const standardScript = renderBootstrapScript(env, deployment, "B".repeat(43));
+
+  it("installs dnstt and slipstream pinned through the Go module proxy", () => {
+    expect(tunnelScript).toContain("go install www.bamsoftware.com/git/dnstt.git/dnstt-server@latest");
+    expect(tunnelScript).toContain("go install github.com/getlantern/slipstream/cmd/slipstream-server@3e15c2d877b2a575a64ffc60da18123f6e6b259d");
+    expect(tunnelScript).toContain('fail "Go toolchain SHA-256 mismatch"');
+  });
+
+  it("keeps tunnel private keys on the VPS and reports public material only", () => {
+    expect(tunnelScript).toContain("dnstt-server -gen-key");
+    expect(tunnelScript).toContain("chmod 0600 /etc/v13-tunnel/dnstt.keys");
+    expect(tunnelScript).toContain('"dnsttPublicKey": os.environ.get("DNSTT_PUB", "")');
+    expect(tunnelScript).not.toContain("dnstt.priv");
+  });
+
+  it("wires systemd units for both tunnel servers and the loopback proxy", () => {
+    expect(tunnelScript).toContain("dnstt-server.service");
+    expect(tunnelScript).toContain("slipstream-server.service");
+    expect(tunnelScript).toContain("sing-box-client.service");
+    expect(tunnelScript).toContain("-udp :53 -privkey");
+  });
+
+  it("flags tunnel provisioning per deployment via the header, guarded at runtime", () => {
+    expect(standardScript).toContain("DNS_TUNNEL='0'");
+    expect(tunnelScript).toContain("DNS_TUNNEL='1'");
+    expect(tunnelScript).toContain('if [ "$DNS_TUNNEL" = "1" ] && [ -n "$TUNNEL_DOMAIN" ]; then');
+    expect(tunnelScript).toContain("TUNNEL_DOMAIN='t.example.com'");
+  });
+
+  it("silences periodic reports for sleeper nodes via the role header and installs the beacon timer", () => {
+    expect(standardScript).toContain("NODE_ROLE='standard'");
+    expect(tunnelScript).toContain("NODE_ROLE='sleeper'");
+    expect(tunnelScript).toContain('if [ "$NODE_ROLE" = "sleeper" ]; then');
+    expect(tunnelScript).toContain("systemctl disable v13-health-report.timer");
+    expect(tunnelScript).toContain("v13-sleeper.timer");
+    expect(tunnelScript).toContain("/var/lib/v13-agent/sleeper.log");
+  });
+
+  it("measures MTU through five probe sizes on the national path", () => {
+    expect(tunnelScript).toContain("SIZES = [512,768,1024,1180,1400]");
+    expect(tunnelScript).toContain("v13-mtu-probe.py");
+  });
 });

@@ -97,4 +97,31 @@ export function assertAgentCompletePayload(input: unknown): asserts input is {
   if (typeof body.vlessPort !== "number" || !Number.isInteger(body.vlessPort) || ![443, 8443].includes(body.vlessPort)) {
     throw new HttpError(400, "invalid_input", "vlessPort is invalid");
   }
+  const optionalPatterns: Record<string, RegExp> = {
+    dnsttPublicKey: /^[0-9a-f]{64}$/u,
+    slipstreamSpkiSha256: /^[A-Za-z0-9+/]{43}=$/u,
+  };
+  for (const [field, pattern] of Object.entries(optionalPatterns)) {
+    if (body[field] !== undefined && (typeof body[field] !== "string" || !pattern.test(body[field]))) {
+      throw new HttpError(400, "invalid_input", `${field} is invalid`);
+    }
+  }
+}
+
+/** Agent health report optional tunnel fields (validated, clamped, honest). */
+export function extractAgentReportExtras(input: Record<string, unknown>): {
+  mtuBytes: number | null;
+  tunnelTxtRttMs: number | null;
+  tunnelStatus: string | null;
+} {
+  const mtuRaw = input.mtuBytes;
+  const mtuBytes =
+    typeof mtuRaw === "number" && Number.isInteger(mtuRaw) && mtuRaw >= 512 && mtuRaw <= 1400 ? mtuRaw : null;
+  const rttRaw = input.tunnelTxtRttMs;
+  const tunnelTxtRttMs =
+    typeof rttRaw === "number" && Number.isFinite(rttRaw) ? Math.min(10_000, Math.max(0, Math.round(rttRaw))) : null;
+  const statusRaw = input.tunnelStatus;
+  const tunnelStatus =
+    typeof statusRaw === "string" && ["active", "inactive", "not-installed"].includes(statusRaw) ? statusRaw : null;
+  return { mtuBytes, tunnelTxtRttMs, tunnelStatus };
 }

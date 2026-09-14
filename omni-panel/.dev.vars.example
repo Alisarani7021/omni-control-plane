@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local `wrangler dev`. Nothing here is required —
+# without a SECRET the Worker generates and stores its own session signing key.
+# .dev.vars is gitignored; .dev.vars.example is not.
+SECRET=replace-with-a-long-random-string
+# RECOVERY_CODE=one-time-code-if-you-lose-the-password

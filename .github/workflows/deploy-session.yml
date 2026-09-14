@@ -1,0 +1,130 @@
+# Deploy the control plane from a long-running Arena session branch, through the
+# same repository secrets the main-branch workflow uses — no credential ever
+# touches chat and main stays untouched.
+#
+# Unlike deploy.yml (push to main), this one is a full pipeline: the whole
+# verification suite must pass first, then migrations + deploy + webhook run.
+#
+# Repo secrets (Settings → Secrets and variables → Actions → "Secrets" tab):
+#   CLOUDFLARE_API_TOKEN    — Account: Workers Scripts Edit, D1 Edit;
+#                             Zone: Workers Routes Edit, Zone Read
+#   CLOUDFLARE_ACCOUNT_ID   — optional; wrangler.jsonc pins account_id too
+#   TELEGRAM_BOT_TOKEN      — from @BotFather (needed to refresh bot commands)
+#   TELEGRAM_WEBHOOK_SECRET — optional: only used to (re)register the webhook.
+#                             It must equal the Worker secret, otherwise the
+#                             live bot would reject Telegram's updates, so the
+#                             script leaves the registration alone when unset.
+# A handful of alternative names is accepted for the Cloudflare credential so a
+# naming mix-up does not silently skip the deploy.
+#
+# Without any Cloudflare token the deploy job skips with a warning (never fails)
+# and reports which names it looked for — values are never printed.
+name: v13-deploy-session
+
+on:
+  push:
+    branches: ["arena/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v13-deploy-session-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+      - run: npm ci
+      - run: npm run preflight
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # CI=true keeps wrangler non-interactive (no confirmation prompts).
+      CI: "true"
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+      # Presence-probed candidates: a name or tab mix-up stays visible, and the
+      # credential is picked up from whichever name actually holds it.
+      CF_TOKEN_01: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_TOKEN_02: ${{ secrets.CF_API_TOKEN }}
+      CF_TOKEN_03: ${{ secrets.CLOUDFLARE_API_KEY }}
+      CF_TOKEN_04: ${{ secrets.CLOUDFLARE_TOKEN }}
+      CF_TOKEN_05: ${{ secrets.CF_TOKEN }}
+      CF_TOKEN_06: ${{ secrets.CONFIG_DEPLOY_TOKEN }}
+      CF_TOKEN_07: ${{ secrets.CLOUDFLARE_API_TOKEN_V13 }}
+      CF_TOKEN_08: ${{ vars.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Resolve deployment credentials
+        id: gate
+        run: |
+          # Presence only — a secret's value is never echoed; GitHub masks it anyway.
+          echo "secrets seen: CLOUDFLARE_API_TOKEN=${CF_TOKEN_01:+set} CF_API_TOKEN=${CF_TOKEN_02:+set} CLOUDFLARE_API_KEY=${CF_TOKEN_03:+set} CLOUDFLARE_TOKEN=${CF_TOKEN_04:+set} CF_TOKEN=${CF_TOKEN_05:+set} CLOUDFLARE_API_TOKEN_V13=${CF_TOKEN_07:+set} vars.CLOUDFLARE_API_TOKEN=${CF_TOKEN_08:+set}"
+          echo "secrets seen: CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:+set} TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+set} TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:+set}"
+          token=""; source_name="none"
+          for name in CLOUDFLARE_API_TOKEN CF_API_TOKEN CLOUDFLARE_API_KEY CLOUDFLARE_TOKEN CF_TOKEN CLOUDFLARE_API_TOKEN_V13; do
+            candidate=""
+            case "$name" in
+              CLOUDFLARE_API_TOKEN) candidate="${CF_TOKEN_01:-}" ;;
+              CF_API_TOKEN) candidate="${CF_TOKEN_02:-}" ;;
+              CLOUDFLARE_API_KEY) candidate="${CF_TOKEN_03:-}" ;;
+              CLOUDFLARE_TOKEN) candidate="${CF_TOKEN_04:-}" ;;
+              CF_TOKEN) candidate="${CF_TOKEN_05:-}" ;;
+              CLOUDFLARE_API_TOKEN_V13) candidate="${CF_TOKEN_07:-}" ;;
+            esac
+            if [ -z "$token" ] && [ -n "$candidate" ]; then token="$candidate"; source_name="$name"; fi
+          done
+          if [ -z "$token" ] && [ -n "${CF_TOKEN_08:-}" ]; then token="$CF_TOKEN_08"; source_name="vars.CLOUDFLARE_API_TOKEN"; fi
+          echo "::warning title=Deploy credential probe (names only)::token_source=${source_name} · looked for: CLOUDFLARE_API_TOKEN, CF_API_TOKEN, CLOUDFLARE_API_KEY, CLOUDFLARE_TOKEN, CF_TOKEN, CLOUDFLARE_API_TOKEN_V13, vars.CLOUDFLARE_API_TOKEN"
+          if [ -z "$token" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Deploy skipped::No Cloudflare credential is visible to Actions in this repository."
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "CLOUDFLARE_API_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "Using the Cloudflare token stored as: $source_name"
+
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - if: steps.gate.outputs.ready == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+      - if: steps.gate.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Apply D1 migrations
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          npx wrangler d1 migrations apply v13-control-plane --remote
+
+      - name: Deploy worker
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          npx wrangler deploy
+
+      - name: Register Telegram commands (+ webhook when the secret is set)
+        if: steps.gate.outputs.ready == 'true' && env.TELEGRAM_BOT_TOKEN != ''
+        env:
+          PUBLIC_BASE_URL: https://control.nnguts.dpdns.org
+        run: node scripts/set-telegram-webhook.mjs
