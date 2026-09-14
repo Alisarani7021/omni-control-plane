@@ -58,25 +58,25 @@ export function omniUploadMetadata(plan: Pick<OmniPlan, "agentKey" | "signingSec
 
 /** Idempotent D1: reuse a same-named database instead of failing the deploy. */
 export async function findOrCreateD1(auth: CloudflareAuth, accountId: string, name: string): Promise<{ id: string; created: boolean }> {
-  const existing = await cloudflareApi<{ result: { id?: string; uuid?: string; name: string }[] }>(auth, `/accounts/${accountId}/d1/database?name=${encodeURIComponent(name)}`);
+  // cloudflareApi unwraps the envelope: T is the `result` payload itself.
   // The D1 list API returns `uuid`; older docs said `id`. Accept both so a
   // renamed API field can never surface as "undefined" mid-provision.
-  const hit = existing.result?.find((d) => d.name === name);
+  const existing = await cloudflareApi<{ id?: string; uuid?: string; name: string }[]>(auth, `/accounts/${accountId}/d1/database?name=${encodeURIComponent(name)}`);
+  const hit = existing?.find((d) => d.name === name);
   if (hit) {
     const foundId = hit.uuid ?? hit.id;
     if (!foundId) throw new Error(`D1 list returned "${name}" without an id`);
     return { id: foundId, created: false };
   }
-  const made = await cloudflareApi<{ result: { uuid: string } | null; errors?: { message?: string }[] }>(auth, `/accounts/${accountId}/d1/database`, {
+  // On failure cloudflareApi itself throws with the real Cloudflare code and
+  // message, so reaching here means the database exists in `made`.
+  const made = await cloudflareApi<{ uuid?: string; id?: string }>(auth, `/accounts/${accountId}/d1/database`, {
     method: "POST",
     body: JSON.stringify({ name }),
   });
-  if (!made.result) {
-    // Surface the real Cloudflare error (permissions, quota, duplicate name)
-    // instead of a TypeError three frames away from the cause.
-    throw new Error(`D1 create failed: ${(made.errors?.[0]?.message || JSON.stringify(made)).slice(0, 220)}`);
-  }
-  return { id: made.result.uuid, created: true };
+  const newId = made?.uuid ?? made?.id;
+  if (!newId) throw new Error(`D1 create for "${name}" returned no id`);
+  return { id: newId, created: true };
 }
 
 export async function uploadKavehWorker(auth: CloudflareAuth, plan: OmniPlan, d1Id: string): Promise<void> {
@@ -97,8 +97,8 @@ export async function enableWorkersDev(auth: CloudflareAuth, accountId: string, 
       method: "POST",
       body: JSON.stringify({ enabled: true }),
     });
-    const sub = await cloudflareApi<{ result: { subdomain: string } }>(auth, `/accounts/${accountId}/workers/subdomain`);
-    return `https://${workerName}.${sub.result.subdomain}.workers.dev`;
+    const sub = await cloudflareApi<{ subdomain: string }>(auth, `/accounts/${accountId}/workers/subdomain`);
+    return `https://${workerName}.${sub.subdomain}.workers.dev`;
   } catch {
     return null;
   }
