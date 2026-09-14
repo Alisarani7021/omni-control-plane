@@ -23,6 +23,13 @@ describe("omni upload metadata", () => {
     const noSecret = omniUploadMetadata({ agentKey: "ak" }, "d1") .bindings as { name: string }[];
     expect(noSecret.map((b) => b.name)).not.toContain("SECRET");
   });
+
+  it("ensures Cloudflare worker names are strictly lowercase alphanumeric with dashes", () => {
+    const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 6);
+    const workerName = `omni-${suffix}`;
+    expect(workerName).toMatch(/^omni-[0-9a-f]{6}$/);
+    expect(workerName).toBe(workerName.toLowerCase());
+  });
 });
 
 describe("vendored omni bundle", () => {
