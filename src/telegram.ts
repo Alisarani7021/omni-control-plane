@@ -513,8 +513,33 @@ async function telegramApi(env: Env, method: string, payload: Record<string, unk
     body: JSON.stringify(payload),
   });
   const result = await response.json<TelegramApiResponse>().catch(() => ({ ok: false as const }));
-  if (!response.ok || !result.ok) throw new Error(`Telegram API request failed: ${response.status} ${method}`);
+  if (!response.ok || !result.ok) {
+    const description = typeof (result as { description?: unknown }).description === "string"
+      ? (result as { description: string }).description
+      : "";
+    throw new Error(
+      `Telegram API request failed: ${response.status} ${method}${description ? ` — ${description}` : ""}`,
+    );
+  }
   return result;
+}
+
+/** Telegram is strict about HTML entities; strip the tags we use so a card can never die on parsing. */
+function stripMarkup(text: string): string {
+  return text.replace(/<\/?(?:b|code|i|u|pre|a)[^>]*>/gi, "");
+}
+
+function isParseError(error: unknown): boolean {
+  return error instanceof Error && /parse|entit|text/u.test(error.message);
+}
+
+function plainPayload(view: RenderedView): Record<string, unknown> {
+  return {
+    text: stripMarkup(view.text),
+    ...(view.protect === true ? { protect_content: true } : {}),
+    disable_web_page_preview: true,
+    reply_markup: view.keyboard,
+  };
 }
 
 function webhookSend(chatId: number, text: string, replyMarkup?: TelegramInlineKeyboard, html = false, protect = false): Response {
@@ -2471,7 +2496,21 @@ async function editView(
       disable_web_page_preview: true,
       reply_markup: view.keyboard,
     });
-  } catch {
+  } catch (error) {
+    if (view.html && isParseError(error)) {
+      try {
+        await telegramApi(env, "editMessageText", { chat_id: chatId, message_id: messageId, ...plainPayload(view) });
+        return;
+      } catch {
+        // fall through to the stripped sendMessage, then the plain one
+      }
+      try {
+        await telegramApi(env, "sendMessage", { chat_id: chatId, ...plainPayload(view) });
+        return;
+      } catch {
+        // fall through
+      }
+    }
     await telegramApi(env, "sendMessage", {
       chat_id: chatId,
       text: view.text,
@@ -2488,14 +2527,22 @@ async function sendView(
   chatId: number,
   view: RenderedView,
 ): Promise<void> {
-  await telegramApi(env, "sendMessage", {
-    chat_id: chatId,
-    text: view.text,
-    ...(view.html ? { parse_mode: "HTML" } : {}),
-    ...(view.protect === true ? { protect_content: true } : {}),
-    disable_web_page_preview: true,
-    reply_markup: view.keyboard,
-  });
+  try {
+    await telegramApi(env, "sendMessage", {
+      chat_id: chatId,
+      text: view.text,
+      ...(view.html ? { parse_mode: "HTML" } : {}),
+      ...(view.protect === true ? { protect_content: true } : {}),
+      disable_web_page_preview: true,
+      reply_markup: view.keyboard,
+    });
+  } catch (error) {
+    if (view.html && isParseError(error)) {
+      await telegramApi(env, "sendMessage", { chat_id: chatId, ...plainPayload(view) });
+      return;
+    }
+    throw error;
+  }
 }
 
 async function answerError(
@@ -2647,43 +2694,25 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       }
       await clearWizard(env, telegramUserId);
       await clearPanelFlow(env, telegramUserId);
-      let connectionId = panelPick.connectionId;
-      if (!connectionId && messageId !== undefined) {
-        const connections = await botListConnections(env, principal);
-        if (connections.length === 0) {
-          // Panel catalog is self-contained: ask for the panel's own temporary
-          // token in chat instead of routing to any connect form.
-          const tokenFlow: PanelFlow = {
-            flow: "panel",
-            step: FLOW_STEP_PANEL_TOKEN,
-            data: { panel: spec.key, panel_name: spec.name },
-          };
-          await savePanelFlow(env, telegramUserId, tokenFlow);
-          await answerCallback(env, query.id, "توکن پنل را بفرستید");
-          await editView(env, chatId, messageId, {
-            text: flowPrompt(tokenFlow),
-            keyboard: panelTokenKeyboard(),
-            html: true,
-          });
-          return json({ ok: true });
-        }
-        if (connections.length > 1) {
-          await answerCallback(env, query.id, "اتصال را انتخاب کنید");
-          const rows: TelegramInlineKeyboard["inline_keyboard"] = connections.map((connection) => ([
-            { text: (connection.resource_zone_name ?? shortId(connection.id)).slice(0, 40), callback_data: `v13:dep-panel:${spec.key}:${connection.id}` },
-          ]));
-          rows.push(cancelKeyboard().inline_keyboard[0]!);
-          await editView(env, chatId, messageId, {
-            text: `➕ ${spec.name} روی کدام اتصال Cloudflare استقرار یابد؟`,
-            keyboard: { inline_keyboard: rows },
-            html: false,
-          });
-          return json({ ok: true });
-        }
-        connectionId = connections[0]?.id ?? "";
+      // Owner request: panels never ask about connections or zones — a panel
+      // deploys on workers.<account> with no domain, so picking one always
+      // starts the panel's own one-click token step. (A connectionId only
+      // arrives from legacy picker buttons; those keep working.)
+      const connectionId = panelPick.connectionId;
+      if (!connectionId) {
+        const tokenFlow: PanelFlow = {
+          flow: "panel",
+          step: FLOW_STEP_PANEL_TOKEN,
+          data: { panel: spec.key, panel_name: spec.name },
+        };
+        await savePanelFlow(env, telegramUserId, tokenFlow);
+        await answerCallback(env, query.id, "توکن پنل را بفرستید");
+        const tokenView: RenderedView = { text: flowPrompt(tokenFlow), keyboard: panelTokenKeyboard(), html: true };
+        if (messageId === undefined) await sendView(env, chatId, tokenView);
+        else await editView(env, chatId, messageId, tokenView);
+        return json({ ok: true });
       }
-      const flow: PanelFlow = { flow: "panel", step: FLOW_STEP_PANEL_NAME, data: { panel: spec.key } };
-      if (connectionId) flow.data["connection"] = connectionId;
+      const flow: PanelFlow = { flow: "panel", step: FLOW_STEP_PANEL_NAME, data: { panel: spec.key, connection: connectionId } };
       await savePanelFlow(env, telegramUserId, flow);
       await answerCallback(env, query.id, `${spec.name} — نام Worker را بفرستید`);
       const view: RenderedView = { text: panelPromptFor(spec), keyboard: panelFlowKeyboard(), html: true };
