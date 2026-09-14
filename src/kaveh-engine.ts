@@ -62,7 +62,11 @@ export async function findOrCreateD1(auth: CloudflareAuth, accountId: string, na
   // The D1 list API returns `uuid`; older docs said `id`. Accept both so a
   // renamed API field can never surface as "undefined" mid-provision.
   const hit = existing.result?.find((d) => d.name === name);
-  if (hit) return { id: hit.uuid ?? hit.id, created: false };
+  if (hit) {
+    const foundId = hit.uuid ?? hit.id;
+    if (!foundId) throw new Error(`D1 list returned "${name}" without an id`);
+    return { id: foundId, created: false };
+  }
   const made = await cloudflareApi<{ result: { uuid: string } | null; errors?: { message?: string }[] }>(auth, `/accounts/${accountId}/d1/database`, {
     method: "POST",
     body: JSON.stringify({ name }),

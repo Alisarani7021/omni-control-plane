@@ -1,0 +1,126 @@
+#:schema ./node_modules/wrangler/config-schema.json
+name = "kaveh"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+# Any date ≥ 2025-04-01 works. Do NOT bump it past what your installed workerd
+# supports — `wrangler dev` fails with "the newest date supported by this server
+# binary is …". Wrangler 4.86 (Node 20) caps at 2026-05-03; Wrangler ≥5 needs
+# Node 22 and accepts newer dates.
+
+# ── Static assets served straight from Cloudflare's edge ─────────────────────
+# This is the single biggest win over Zeus: the panel HTML/CSS/JS never burns a
+# Worker invocation. Zeus ships ~630 KB of inlined template strings through the
+# Worker on every /panel load. Kaveh ships ~36 KB (gzipped) of cached edge
+# assets, and the Worker only runs for /api/*, /s/*, /status/* and the tunnel.
+#
+# `run_worker_first` is a LIST of patterns, not `true`: `true` would push every
+# CSS/JS/font request through the Worker, i.e. exactly the waste we are avoiding.
+# The patterns below are explained at the setting itself.
+[assets]
+directory = "./ui"
+binding = "ASSETS"
+html_handling = "auto-trailing-slash"
+not_found_handling = "single-page-application"
+# "/*" with asset exclusions — NOT just the /api prefixes. Two reasons, both
+# learned by running it:
+#   • The VLESS tunnel lives at /<uuid>, a path no asset list can enumerate. With
+#     a prefix-only list, a WS handshake carrying `Sec-Fetch-Mode: navigate` is
+#     answered by the asset server with index.html (HTTP 200) and the proxy is
+#     never invoked. Confirmed in the wrangler dev log.
+#   • Listing patterns here also *disables* the automatic navigation-request
+#     detection, so routing becomes explicit instead of header-dependent.
+# Static JS/CSS/fonts still bypass the Worker entirely, so the cheap part stays
+# cheap: one invocation per page navigation, zero per asset.
+# `!/cdn-cgi/*` is load-bearing: without it the "/*" pattern also captures
+# Cloudflare's reserved internal paths — including /cdn-cgi/handler/scheduled,
+# the endpoint `wrangler dev` uses to fire a cron locally. With the Worker
+# claiming that path, the scheduled handler is never invoked and dev returns a
+# bare 500 "exception" with nothing in the log.
+run_worker_first = ["/*", "!/assets/*", "!/cdn-cgi/*", "!/icon.svg", "!/favicon.ico", "!/manifest.webmanifest", "!/sw.js", "!/robots.txt"]
+
+# ── Database ────────────────────────────────────────────────────────────────
+# `database_id` is intentionally absent.
+#
+# Wrangler >= 4.45 auto-provisions the D1 database on deploy when the ID is
+# omitted — including dashboard and "Deploy with Workers" deploys, where the ID
+# cannot be written back into the repo. The schema is then applied at boot by
+# src/db/migrate.js from these very same SQL files, so the whole panel comes up
+# from a single tap with no terminal.
+#
+# CLI users can still pin an explicit database:
+#   wrangler d1 create kaveh && wrangler d1 migrations apply kaveh --remote
+# and paste the id below. Both paths converge on the same numbered migrations.
+[[d1_databases]]
+binding = "DB"
+database_name = "kaveh"
+migrations_dir = "schema"
+
+# No [[rules]] block needed: wrangler's DEFAULT module rules already include
+# {"type":"Text","globs":["**/*.txt","**/*.html","**/*.sql"]}, so
+# src/db/migrate.js can `import` the migration files directly and the repo keeps
+# exactly one copy of the schema. Declaring our own rule without `fallthrough`
+# would silently suppress those defaults — wrangler warns about it at boot.
+
+# ── Counters (traffic / devices / rate-limit) ────────────────────────────────
+# Durable Objects keep exact numbers. In-memory Maps (what Zeus uses) are wiped
+# every time the isolate is evicted, which silently loses traffic and lets a
+# user exceed their device limit by reconnecting across POPs.
+#
+# new_sqlite_classes (not new_classes) is mandatory now:
+#   • Workers Free plan only ever supported SQLite-backed DOs
+#   • since 2026-07-09 accounts without a pre-existing KV-backed namespace
+#     cannot create one at all — `new_classes` fails the deploy
+#   • SQLite DOs have full feature parity, including the key-value storage API
+#     used here (storage.get/put/delete), plus storage.sql if you want it
+[[durable_objects.bindings]]
+name = "LEDGER"
+class_name = "Ledger"
+
+[[durable_objects.bindings]]
+name = "GUARD"
+class_name = "Guard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Ledger", "Guard"]
+
+# ── Scheduled work ───────────────────────────────────────────────────────────
+# Expiry enforcement, clean-IP rotation, session/log pruning. Zeus runs these on
+# EVERY user request via ctx.waitUntil — so a busy panel pays for them thousands
+# of times a day and an idle panel never runs them at all.
+[triggers]
+crons = ["*/10 * * * *"]
+
+# ── Optional: KV for the clean-IP cache ──────────────────────────────────────
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "PUT-YOUR-KV-UUID-HERE"
+
+[vars]
+PANEL_NAME = "Kaveh"
+DEFAULT_QUOTA_GB = "50"
+DEFAULT_EXPIRY_DAYS = "30"
+SUB_PATH_PREFIX = "s"
+FRAGMENT_PRESET = "mci"
+LOG_LEVEL = "info"
+# Set to "1" TEMPORARILY to include the exception message/stack in 500 responses.
+# Off by default: an exception message can leak a binding name, query or hostname.
+DEBUG_ERRORS = "0"
+
+# Secrets — set with `wrangler secret put <NAME>`, never commit them.
+# NONE of these are required for a working panel: a deploy with zero secrets
+# boots, provisions its own D1 schema, generates its own session signing key and
+# lets the first visitor create the admin password in the browser.
+#   SECRET          optional; pins your own session signing key instead of the
+#                   generated one (src/core/keys.js). Recommended for CLI deploys.
+#   RECOVERY_CODE   optional; the only way back in if the password is lost
+#   CF_ACCOUNT_ID   optional; enables the Cloudflare quota gauge
+#   CF_API_TOKEN    optional; read-only Workers Analytics token for the above
+
+[observability]
+enabled = true
+
+# ── Local dev ────────────────────────────────────────────────────────────────
+# npm run dev  → http://localhost:8787   (miniflare: real D1, real SQLite DOs)
+# npm run ui   → http://localhost:5173   (node + mock API, no Cloudflare needed)
+# Note: SQLite-backed DOs only work with `wrangler dev --local`, not --remote.

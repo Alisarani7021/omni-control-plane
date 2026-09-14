@@ -1,0 +1,48 @@
+{
+  "name": "kaveh-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "کاوه — پنل پروکسی VLESS/Trojan روی Cloudflare Workers. ماژولار، بدون CDN، بدون DRM.",
+  "scripts": {
+    "dev": "wrangler dev --local --persist-to .wrangler/state",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply kaveh --local",
+    "db:migrate:remote": "wrangler d1 migrations apply kaveh --remote",
+    "ui": "node server/dev.js",
+    "test": "node --test --import ./test/register-sql.mjs test/",
+    "lint": "node scripts/lint.js",
+    "build": "node scripts/build.js",
+    "rename": "node scripts/rename.js",
+    "activate": "bash scripts/activate.sh",
+    "activate:dry": "bash scripts/activate.sh --dry-run",
+    "build:headless": "node scripts/build-headless.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.86.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alisarani7021/kaveh.git"
+  },
+  "homepage": "https://github.com/Alisarani7021/kaveh#readme",
+  "bugs": {
+    "url": "https://github.com/Alisarani7021/kaveh/issues"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "d1",
+    "durable-objects",
+    "panel",
+    "persian",
+    "proxy",
+    "self-hosted",
+    "subscription",
+    "trojan",
+    "vless"
+  ]
+}

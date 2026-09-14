@@ -1,0 +1,17 @@
+{
+  "name": "Kaveh Panel",
+  "short_name": "Kaveh",
+  "description": "پنل مدیریت پروکسی کاوه",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "/panel",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#06070a",
+  "theme_color": "#06070a",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
