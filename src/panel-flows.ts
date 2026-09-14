@@ -19,7 +19,7 @@ import type { Env, TelegramInlineKeyboard } from "./types";
 
 export const PANEL_FLOW_TTL_SECONDS = 900;
 
-export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel" | "dnsrange" | "white" | "slipcfg" | "dnstt";
+export type PanelFlowKind = "rum" | "map" | "donate" | "pack" | "panel" | "dnsrange" | "white" | "slipcfg" | "dnstt" | "omni";
 
 export const FLOW_STEP_RUM_PING = "rum:ping";
 export const FLOW_STEP_RUM_LOSS = "rum:loss";
@@ -32,6 +32,7 @@ export const FLOW_STEP_DONATE_KEY = "donate:key";
 export const FLOW_STEP_PACK_DOMAIN = "pack:domain";
 export const FLOW_STEP_PACK_UUID = "pack:uuid";
 export const FLOW_STEP_PANEL_TOKEN = "panel:token";
+export const FLOW_STEP_OMNI_TOKEN = "omni:token";
 export const FLOW_STEP_PANEL_NAME = "panel:name";
 export const FLOW_STEP_PANEL_PASS = "panel:pass";
 export const FLOW_STEP_DNSTT_VPS = "dnstt:vps";

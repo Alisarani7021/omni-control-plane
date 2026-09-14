@@ -103,6 +103,7 @@ import {
   FLOW_STEP_MAP_VERDICT,
   FLOW_STEP_PACK_DOMAIN,
   FLOW_STEP_RUM_PING,
+  FLOW_STEP_OMNI_TOKEN,
   FLOW_STEP_PANEL_TOKEN,
   FLOW_STEP_PANEL_NAME,
   FLOW_STEP_PANEL_PASS,
@@ -2353,6 +2354,28 @@ async function handleMessageUpdate(update: TelegramUpdate, env: Env, ctx?: Execu
   const flow = await loadPanelFlow(env, telegramUserId);
   if (flow) {
     try {
+      if (flow.flow === "omni" && flow.step === FLOW_STEP_OMNI_TOKEN) {
+        try {
+          await connectPanelTokenFromChat(env, tenant.id, telegramUserId, text.trim());
+          await clearPanelFlow(env, telegramUserId);
+          try {
+            await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id });
+          } catch {
+            // deleting the user's token message is best-effort
+          }
+          return webhookSend(
+            message.chat.id,
+            "✅ حساب Cloudflare وصل شد (رمزنگاری‌شده، فقط برای ساخت نود OMNI روی حساب خودت).\n\nقدم بعد: از منوی «⚒️ پنل OMNI» بزن «🚀 ساخت نود OMNI».",
+            { inline_keyboard: [[{ text: "🚀 ساخت نود OMNI", callback_data: "v13:kaveh:new" }], [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]] },
+            true,
+          );
+        } catch (error) {
+          if (error instanceof HttpError) {
+            return webhookSend(message.chat.id, `⚠️ ${error.message}\n\nتوکن را دوباره بفرستید.`, panelTokenKeyboard(), true);
+          }
+          throw error;
+        }
+      }
       if (flow.flow === "panel") {
         return await handlePanelDeployText(env, message.chat.id, tenant.id, tenant.displayName, telegramUserId, flow, text);
       }
@@ -2606,18 +2629,23 @@ function omniNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
   };
 }
 
-/** OMNI-branded one-time connect link — never the V13 dedicated-env prompt. */
-async function omniConnectView(env: Env, tenantId: string, telegramUserId: string): Promise<RenderedView> {
-  const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenantId, telegramUserId);
+/** OMNI connect lives in this chat — no V13 dedicated-env page, ever. */
+async function omniConnectView(env: Env, intro?: string): Promise<RenderedView> {
   return {
     text: [
-      "🔌 اتصال حساب Cloudflare — فقط برای ساخت نود OMNI روی حساب خودتان",
+      intro ?? "🔌 اتصال حساب Cloudflare — فقط برای ساخت نود OMNI روی حساب خودتان",
       "",
-      `🔐 لینک یک‌بارمصرف (${ttlMinutes} دقیقه، یک بار مصرف):`,
-      "«در تلگرام» فرم امن را همین‌جا باز می‌کند؛ «در مرورگر» در مرورگر گوشی.",
-      "توکن را هرگز در چت نفرستید؛ فقط در فرم امن.",
+      "📩 «اتصال در چت» را بزن و توکن را همین‌جا بفرست؛ رمزنگاری ذخیره می‌شود و پیامِ حاوی توکن را خودم حذف می‌کنم.",
+      "توکن نداری؟ دکمهٔ الگو را بزن تا Cloudflare توکن آماده بچیند (Workers Scripts Edit + D1 Edit + Zone Read).",
+      "هیچ صفحهٔ وبِ دیگری در کار نیست؛ همه‌چیز داخل همین ربات.",
     ].join("\n"),
-    keyboard: loginKeyboard(appUrl, webUrl),
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "📩 اتصال در چت", callback_data: "omni:connect:chat" }],
+        [{ text: "☁️ ساخت Token آماده در Cloudflare", url: cloudflarePanelTemplateUrl() }],
+        [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+      ],
+    },
     html: false,
     protect: true,
   };
@@ -2750,7 +2778,19 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
     if (data === "omni:connect") {
       if (messageId === undefined) return json({ ok: true });
       await answerCallback(env, query.id, "اتصال حساب");
-      await editView(env, chatId, messageId, await omniConnectView(env, tenant.id, telegramUserId));
+      await editView(env, chatId, messageId, await omniConnectView(env));
+      return json({ ok: true });
+    }
+    if (data === "omni:connect:chat") {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "اتصال در چت");
+      await savePanelFlow(env, telegramUserId, { flow: "omni", step: FLOW_STEP_OMNI_TOKEN, data: {} });
+      await editView(env, chatId, messageId, {
+        text: "📩 توکن Cloudflare را همین‌جا بفرست.\nبعد از تأیید، پیامِ حاوی توکن حذف می‌شود و اتصال رمزنگاری‌شده ذخیره می‌شود.\nلغو: دکمهٔ ❌ انصراف.",
+        keyboard: panelTokenKeyboard(),
+        html: false,
+        protect: true,
+      });
       return json({ ok: true });
     }
     if (data.startsWith("v13:kaveh:token:")) {
@@ -2779,7 +2819,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       const connections = await botListConnections(env, principal);
       const first = connections[0];
       if (!first) {
-        await sendView(env, chatId, await omniConnectView(env, tenant.id, telegramUserId));
+        await sendView(env, chatId, await omniConnectView(env));
         return json({ ok: true });
       }
       try {
@@ -2796,7 +2836,12 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         else lines.push("", "⚠️ کاربر VIP خودکار نرسید؛ با «➕ کاربر سریع» بسازید.");
         await sendView(env, chatId, { text: lines.join("\n"), keyboard: omniNodeKeyboard(made.node.id), html: false, protect: true });
       } catch (err) {
-        await sendView(env, chatId, { text: `❌ ساخت نود شکست: ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
+        const why = err instanceof Error ? err.message : String(err);
+        if (/Authentication error|code 10000|rejected|inactive/u.test(why)) {
+          await sendView(env, chatId, await omniConnectView(env, "❌ اتصال Cloudflare قبلی باطل شده (توکن بسته یا منقضی). دوباره در چت وصل کنید:"));
+        } else {
+          await sendView(env, chatId, { text: `❌ ساخت نود شکست: ${why}`, keyboard: omniMainMenuKeyboard(), html: false });
+        }
       }
       return json({ ok: true });
     }
