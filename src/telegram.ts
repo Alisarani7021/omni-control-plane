@@ -308,7 +308,11 @@ function menuRows(environment: boolean): TelegramInlineKeyboard["inline_keyboard
 }
 
 export function omniMainMenuKeyboard(): TelegramInlineKeyboard {
-  return { inline_keyboard: menuRows(false) };
+  // Kaveh lives on the public /start menu too: it is the entry point tenants
+  // actually look for, and the callback itself re-checks login/connection.
+  return {
+    inline_keyboard: [...menuRows(false), [{ text: "⚒️ پنل کاوه", callback_data: "v13:kaveh" }]],
+  };
 }
 
 /**
