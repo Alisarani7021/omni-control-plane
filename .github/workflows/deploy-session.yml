@@ -9,8 +9,11 @@
 #   CLOUDFLARE_API_TOKEN    — Account: Workers Scripts Edit, D1 Edit;
 #                             Zone: Workers Routes Edit, Zone Read
 #   CLOUDFLARE_ACCOUNT_ID   — optional; wrangler.jsonc pins account_id too
-#   TELEGRAM_BOT_TOKEN      — from @BotFather
-#   TELEGRAM_WEBHOOK_SECRET — must match the Worker secret
+#   TELEGRAM_BOT_TOKEN      — from @BotFather (needed to refresh bot commands)
+#   TELEGRAM_WEBHOOK_SECRET — optional: only used to (re)register the webhook.
+#                             It must equal the Worker secret, otherwise the
+#                             live bot would reject Telegram's updates, so the
+#                             script leaves the registration alone when unset.
 # Without CLOUDFLARE_API_TOKEN the deploy job skips with a warning (never fails).
 name: v13-deploy-session
 
@@ -101,7 +104,7 @@ jobs:
           [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
           npx wrangler deploy
 
-      - name: Register Telegram webhook + commands
+      - name: Register Telegram commands (+ webhook when the secret is set)
         if: steps.gate.outputs.ready == 'true' && env.TELEGRAM_BOT_TOKEN != ''
         env:
           PUBLIC_BASE_URL: https://control.nnguts.dpdns.org

@@ -5,7 +5,9 @@
 #       Account: Workers Scripts Edit, D1 Edit; Zone: Workers Routes Edit, Zone Read
 #   CLOUDFLARE_ACCOUNT_ID   — from the CF dashboard sidebar (not secret, but handy)
 #   TELEGRAM_BOT_TOKEN      — bot token from @BotFather
-#   TELEGRAM_WEBHOOK_SECRET — any random string; must match the Worker secret
+#   TELEGRAM_WEBHOOK_SECRET — optional; only used to (re)register the webhook and
+#                             it must match the Worker secret. Unset = the
+#                             existing registration is preserved.
 # If the secrets are absent the job is skipped and CI stays green.
 name: v13-deploy
 
@@ -62,7 +64,7 @@ jobs:
           [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
           npx wrangler deploy
 
-      - name: Register Telegram webhook + commands
+      - name: Register Telegram commands (+ webhook when the secret is set)
         if: steps.gate.outputs.ready == 'true' && env.TELEGRAM_BOT_TOKEN != ''
         env:
           PUBLIC_BASE_URL: https://control.nnguts.dpdns.org
