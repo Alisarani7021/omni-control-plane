@@ -103,6 +103,18 @@ export async function omniListUsers(env: Env, principal: SessionPrincipal, nodeI
 }
 
 /** «بازیابی رمز»: wipe the admin hash so the next visit sets a new password. */
+/** BPB-style entry: the bot sets the node's admin password itself and hands it over in chat. */
+export async function omniIssueLoginToken(env: Env, principal: SessionPrincipal, nodeId: string): Promise<{ token: string; url: string }> {
+  const row = (await listOmniNodes(env, principal)).find((n) => n.id === nodeId);
+  if (!row) throw new Error("node not found");
+  if (!row.base_url) throw new Error("این نود آدرس عمومی ندارد؛ اول دامنه یا ساب‌دامین وصل کنید.");
+  const key = await agentKeyOf(env, row);
+  const token = crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  await omniAgent<{ ok: boolean }>(row.base_url, key, "/api/agent/admin/password", { method: "POST", body: JSON.stringify({ password: token }) });
+  await audit(env, { tenantId: principal.tenantId, actorType: "telegram", actorId: principal.telegramUserId, action: "omni.login_token", outcome: "success", metadata: { worker: row.worker_name } });
+  return { token, url: row.base_url };
+}
+
 export async function omniRecover(env: Env, principal: SessionPrincipal, nodeId: string): Promise<string> {
   const row = (await listOmniNodes(env, principal)).find((n) => n.id === nodeId);
   if (!row) throw new Error("node not found");

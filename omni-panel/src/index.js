@@ -72,6 +72,7 @@ router.get("/api/agent/users/:username", Agent.userConfigs, { auth: "none" });
 router.post("/api/agent/users/:username/reset", Agent.userReset, { auth: "none" });
 router.delete("/api/agent/users/:username", Agent.deleteUser, { auth: "none" });
 router.post("/api/agent/admin/reset", Agent.adminReset, { auth: "none" });
+router.post("/api/agent/admin/password", Agent.adminPassword, { auth: "none" });
 
 // ── worker ──────────────────────────────────────────────────────────────────
 export default {

@@ -42,6 +42,7 @@ import {
   omniRecover,
   listOmniNodes,
   type OmniNodeRow,
+  omniIssueLoginToken,
 } from "./omni-flows";
 import { HttpError, json, readJson } from "./http";
 import { connectPanelTokenFromChat } from "./api-token";
@@ -2591,6 +2592,7 @@ function deploymentIdFrom(data: string, prefix: string): string | null {
 function omniNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
   return {
     inline_keyboard: [
+      [{ text: "🔑 توکن ورود به پنل", callback_data: `v13:kaveh:token:${nodeId}` }],
       [
         { text: "👥 کاربران", callback_data: `v13:kaveh:users:${nodeId}` },
         { text: "➕ کاربر سریع", callback_data: `v13:kaveh:vip:${nodeId}` },
@@ -2604,6 +2606,23 @@ function omniNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
   };
 }
 
+/** OMNI-branded one-time connect link — never the V13 dedicated-env prompt. */
+async function omniConnectView(env: Env, tenantId: string, telegramUserId: string): Promise<RenderedView> {
+  const { appUrl, webUrl, ttlMinutes } = await issueLoginPair(env, tenantId, telegramUserId);
+  return {
+    text: [
+      "🔌 اتصال حساب Cloudflare — فقط برای ساخت نود OMNI روی حساب خودتان",
+      "",
+      `🔐 لینک یک‌بارمصرف (${ttlMinutes} دقیقه، یک بار مصرف):`,
+      "«در تلگرام» فرم امن را همین‌جا باز می‌کند؛ «در مرورگر» در مرورگر گوشی.",
+      "توکن را هرگز در چت نفرستید؛ فقط در فرم امن.",
+    ].join("\n"),
+    keyboard: loginKeyboard(appUrl, webUrl),
+    html: false,
+    protect: true,
+  };
+}
+
 function omniListView(nodes: OmniNodeRow[]): RenderedView {
   const lines = ["⚒️ نودهای OMNI شما:", ""];
   for (const n of nodes) lines.push(`• ${n.worker_name} — ${n.base_url}`);
@@ -2611,7 +2630,7 @@ function omniListView(nodes: OmniNodeRow[]): RenderedView {
   const keyboard: TelegramInlineKeyboard = {
     inline_keyboard: [
       [{ text: "🚀 ساخت نود جدید", callback_data: "v13:kaveh:new" }],
-      ...nodes.map((n) => [{ text: `⚙️ ${n.worker_name}`, callback_data: `v13:kaveh:users:${n.id}` }]),
+      ...nodes.map((n) => [{ text: `⚙️ ${n.worker_name}`, callback_data: `v13:kaveh:users:${n.id}` }, { text: "🔑 توکن", callback_data: `v13:kaveh:token:${n.id}` }]),
       [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
     ],
   };
@@ -2713,15 +2732,46 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         return json({ ok: true });
       }
       const connections = await botListConnections(env, principal);
-      if (connections.length === 0) {
-        await editView(env, chatId, messageId, await renderConnectPrompt(env, tenant.id, telegramUserId, "⚒️ برای ساخت نود OMNI اول اتصال Cloudflare بسازید."));
-        return json({ ok: true });
-      }
       await editView(env, chatId, messageId, {
-        text: "⚒️ نود کاوه ندارید ainda.\nبا ساختن، یک Worker هدلس + D1 روی اکانت متصل‌شدهٔ خودتان دیپلوی می‌شود؛ مدیریتش از همین ربات.",
-        keyboard: { inline_keyboard: [[{ text: "🚀 ساخت نود OMNI", callback_data: "v13:kaveh:new" }], [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]] },
+        text: connections.length === 0
+          ? "⚒️ پنل OMNI\n\nهنوز نود OMNI ندارید و حساب Cloudflare هم متصل نیست.\nاول «🔌 اتصال حساب» بزنید: توکن رمزنگاری‌شده فقط برای ساخت نود روی اکانت خودتان ذخیره می‌شود.\nورود به پنل مثل BPB با توکنی است که همین ربات می‌سازد — نه پنل اختصاصی V13."
+          : "⚒️ نود OMNI ندارید.\nبا ساختن، یک Worker هدلس + D1 روی اکانت متصل‌شدهٔ خودتان دیپلوی می‌شود؛ مدیریت و توکن ورودش از همین ربات.",
+        keyboard: {
+          inline_keyboard: [
+            [{ text: "🚀 ساخت نود OMNI", callback_data: "v13:kaveh:new" }],
+            [{ text: "🔌 اتصال حساب Cloudflare", callback_data: "omni:connect" }],
+            [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+          ],
+        },
         html: false,
       });
+      return json({ ok: true });
+    }
+    if (data === "omni:connect") {
+      if (messageId === undefined) return json({ ok: true });
+      await answerCallback(env, query.id, "اتصال حساب");
+      await editView(env, chatId, messageId, await omniConnectView(env, tenant.id, telegramUserId));
+      return json({ ok: true });
+    }
+    if (data.startsWith("v13:kaveh:token:")) {
+      await answerCallback(env, query.id, "ساخت توکن ورود…");
+      const nodeId = data.slice("v13:kaveh:token:".length);
+      try {
+        const { token, url } = await omniIssueLoginToken(env, principal, nodeId);
+        await sendView(env, chatId, {
+          text: `🔑 توکن ورود به پنل (مثل رمز BPB):\n<code>${token}</code>\n\nدر صفحهٔ ورود پنل همین را به‌جای رمز مدیر وارد کنید. تا وقتی عوضش نکنید معتبر است؛ توکن جدید همهٔ نشست‌های باز را هم می‌بندد.`,
+          keyboard: {
+            inline_keyboard: [
+              [{ text: "🌐 ورود به پنل", url: `${url.replace(/\/$/u, "")}/panel` }],
+              [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
+            ],
+          },
+          html: true,
+          protect: true,
+        });
+      } catch (err) {
+        await sendView(env, chatId, { text: `❌ توکن ساخته نشد: ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
+      }
       return json({ ok: true });
     }
     if (data === "v13:kaveh:new") {
@@ -2729,7 +2779,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       const connections = await botListConnections(env, principal);
       const first = connections[0];
       if (!first) {
-        await sendView(env, chatId, { text: "اول اتصال Cloudflare لازم است.", keyboard: omniMainMenuKeyboard(), html: false });
+        await sendView(env, chatId, await omniConnectView(env, tenant.id, telegramUserId));
         return json({ ok: true });
       }
       try {

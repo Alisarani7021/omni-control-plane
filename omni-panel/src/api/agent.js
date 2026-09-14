@@ -9,14 +9,16 @@
  *   • gated by the AGENT_KEY secret (`wrangler secret put AGENT_KEY`);
  *     without it every agent route answers 503 — the surface does not exist
  *   • constant-time compare, key never logged
- *   • NOT an admin session: no password writes, no settings writes, no backup
- *     export. Exactly the verbs a bot needs, nothing more
+ *   • NOT an admin session: no settings writes, no backup export. The single
+ *     exception is `admin/password`, which lets the owning bot issue BPB-style
+ *     entry tokens; it is agent-key gated, audited, and kills every session
  *   • every mutating call lands in the audit log with actor "agent"
  */
 import { json, readJson } from "../core/http.js";
-import { forbidden } from "../core/errors.js";
+import { forbidden, badRequest } from "../core/errors.js";
 import { list, create, remove, reset, getOne } from "./users.js";
-import { Settings } from "../db/index.js";
+import { Settings, audit } from "../db/index.js";
+import { hashPassword } from "../auth/session.js";
 
 const ADMIN_HASH_KEY = "admin_hash";
 
@@ -105,6 +107,26 @@ export async function adminReset(request, E) {
   await S.set({ [ADMIN_HASH_KEY]: "" });
   await E.db.prepare("DELETE FROM sessions").run();
   return json({ ok: true, installed: false, note: "panel is in first-run setup again" });
+}
+
+/**
+ * BPB-style entry token: the orchestrator sets the admin password itself
+ * and hands it to the owner in chat, so «ساخت توکن» in the bot IS the login.
+ * Every existing session is invalidated — issuing a token locks out anyone
+ * else holding the panel open.
+ */
+export async function adminPassword(request, E) {
+  const denied = guard(request, E);
+  if (denied) return denied;
+  const body = await readJson(request);
+  const password = String(body?.password ?? "");
+  if (password.length < 10) throw badRequest("password must be at least 10 characters");
+  const hash = await hashPassword(password);
+  const S = new Settings(E);
+  await S.set({ [ADMIN_HASH_KEY]: hash, installed_at: String(Date.now()) });
+  await E.db.prepare("DELETE FROM sessions").run();
+  await audit(E, { actor: "agent", action: "admin.password.set", ip: "" });
+  return json({ ok: true, installed: true });
 }
 
 /** Convenience for orchestrators that speak JSON bodies only. */

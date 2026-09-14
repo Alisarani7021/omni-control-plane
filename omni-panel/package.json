@@ -10,7 +10,7 @@
     "db:migrate:local": "wrangler d1 migrations apply kaveh --local",
     "db:migrate:remote": "wrangler d1 migrations apply kaveh --remote",
     "ui": "node server/dev.js",
-    "test": "node --test --import ./test/register-sql.mjs test/",
+    "test": "node --test --import ./test/register-sql.mjs test/*.test.js",
     "lint": "node scripts/lint.js",
     "build": "node scripts/build.js",
     "rename": "node scripts/rename.js",
