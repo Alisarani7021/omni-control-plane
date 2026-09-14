@@ -31,10 +31,10 @@ await build({
   loader: { ".sql": "text", ".html": "text", ".txt": "text" },
   minify: true,
   legalComments: "none",
-  outfile: join(OUT, "kaveh-headless.js"),
+  outfile: join(OUT, "omni-headless.js"),
 });
 
-const src = await readFile(join(OUT, "kaveh-headless.js"));
+const src = await readFile(join(OUT, "omni-headless.js"));
 const sha = createHash("sha256").update(src).digest("hex");
-await writeFile(join(OUT, "SHA256"), `${sha}  kaveh-headless.js\n`);
-console.log(`dist-headless/kaveh-headless.js  ${src.byteLength} B  sha256 ${sha.slice(0, 16)}…`);
+await writeFile(join(OUT, "SHA256"), `${sha}  omni-headless.js\n`);
+console.log(`dist-headless/omni-headless.js  ${src.byteLength} B  sha256 ${sha.slice(0, 16)}…`);

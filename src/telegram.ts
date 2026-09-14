@@ -35,14 +35,14 @@ import { applySniDefault, applyUfwChoice, beginDeployWizard, cancelKeyboard, cle
 import { audit, rateLimit } from "./db";
 import { getConnection, getValidCloudflareAuth } from "./cloudflare-api";
 import {
-  createKavehNode,
-  deleteKavehNodeFlow,
-  kavehListUsers,
-  kavehNewUser,
-  kavehRecover,
-  listKavehNodes,
-  type KavehNodeRow,
-} from "./kaveh-flows";
+  createOmniNode,
+  deleteOmniNodeFlow,
+  omniListUsers,
+  omniNewUser,
+  omniRecover,
+  listOmniNodes,
+  type OmniNodeRow,
+} from "./omni-flows";
 import { HttpError, json, readJson } from "./http";
 import { connectPanelTokenFromChat } from "./api-token";
 import {
@@ -308,10 +308,10 @@ function menuRows(environment: boolean): TelegramInlineKeyboard["inline_keyboard
 }
 
 export function omniMainMenuKeyboard(): TelegramInlineKeyboard {
-  // Kaveh lives on the public /start menu too: it is the entry point tenants
+  // Omni lives on the public /start menu too: it is the entry point tenants
   // actually look for, and the callback itself re-checks login/connection.
   return {
-    inline_keyboard: [...menuRows(false), [{ text: "⚒️ پنل کاوه", callback_data: "v13:kaveh" }]],
+    inline_keyboard: [...menuRows(false), [{ text: "⚒️ پنل OMNI", callback_data: "v13:kaveh" }]],
   };
 }
 
@@ -324,7 +324,7 @@ export function omniEnvMenuKeyboard(): TelegramInlineKeyboard {
   return {
     inline_keyboard: [
       ...menuRows(true),
-      [{ text: "⚒️ پنل کاوه", callback_data: "v13:kaveh" }],
+      [{ text: "⚒️ پنل OMNI", callback_data: "v13:kaveh" }],
       [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }],
     ],
   };
@@ -2587,8 +2587,8 @@ function deploymentIdFrom(data: string, prefix: string): string | null {
 }
 
 
-/* ── Kaveh node views ─────────────────────────────────────────────────────── */
-function kavehNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
+/* ── Omni node views ─────────────────────────────────────────────────────── */
+function omniNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
   return {
     inline_keyboard: [
       [
@@ -2604,8 +2604,8 @@ function kavehNodeKeyboard(nodeId: string): TelegramInlineKeyboard {
   };
 }
 
-function kavehListView(nodes: KavehNodeRow[]): RenderedView {
-  const lines = ["⚒️ نودهای کاوه شما:", ""];
+function omniListView(nodes: OmniNodeRow[]): RenderedView {
+  const lines = ["⚒️ نودهای OMNI شما:", ""];
   for (const n of nodes) lines.push(`• ${n.worker_name} — ${n.base_url}`);
   lines.push("", "هر نود روی اکانت کلودفلر خودتان است: Worker و D1 جدا، ترافیک روی سهمیهٔ خودتان.");
   const keyboard: TelegramInlineKeyboard = {
@@ -2703,23 +2703,23 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       return json({ ok: true });
     }
 
-    // --- Kaveh tenant nodes (headless Kaveh on the tenant's own account) ---
+    // --- Omni tenant nodes (headless Omni on the tenant's own account) ---
     if (data === "v13:kaveh") {
       if (messageId === undefined) return json({ ok: true });
-      await answerCallback(env, query.id, "پنل کاوه");
-      const nodes = await listKavehNodes(env, principal);
+      await answerCallback(env, query.id, "پنل OMNI");
+      const nodes = await listOmniNodes(env, principal);
       if (nodes.length > 0) {
-        await editView(env, chatId, messageId, kavehListView(nodes));
+        await editView(env, chatId, messageId, omniListView(nodes));
         return json({ ok: true });
       }
       const connections = await botListConnections(env, principal);
       if (connections.length === 0) {
-        await editView(env, chatId, messageId, await renderConnectPrompt(env, tenant.id, telegramUserId, "⚒️ برای ساخت نود کاوه اول اتصال Cloudflare بسازید."));
+        await editView(env, chatId, messageId, await renderConnectPrompt(env, tenant.id, telegramUserId, "⚒️ برای ساخت نود OMNI اول اتصال Cloudflare بسازید."));
         return json({ ok: true });
       }
       await editView(env, chatId, messageId, {
         text: "⚒️ نود کاوه ندارید ainda.\nبا ساختن، یک Worker هدلس + D1 روی اکانت متصل‌شدهٔ خودتان دیپلوی می‌شود؛ مدیریتش از همین ربات.",
-        keyboard: { inline_keyboard: [[{ text: "🚀 ساخت نود کاوه", callback_data: "v13:kaveh:new" }], [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]] },
+        keyboard: { inline_keyboard: [[{ text: "🚀 ساخت نود OMNI", callback_data: "v13:kaveh:new" }], [{ text: "🏠 منوی اصلی Omni", callback_data: "omni:home" }]] },
         html: false,
       });
       return json({ ok: true });
@@ -2733,9 +2733,9 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         return json({ ok: true });
       }
       try {
-        const made = await createKavehNode(env, principal, first.id);
+        const made = await createOmniNode(env, principal, first.id);
         const lines = [
-          "⚒️ نود کاوه ساخته شد ✅",
+          "⚒️ نود OMNI ساخته شد ✅",
           "",
           `📌 ورکر: ${made.node.worker_name}`,
           `🔗 آدرس: ${made.baseUrl}/panel`,
@@ -2744,7 +2744,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
         ];
         if (made.vip) lines.push("", "👤 لینک اشتراک کاربر VIP:", made.vip.sub);
         else lines.push("", "⚠️ کاربر VIP خودکار نرسید؛ با «➕ کاربر سریع» بسازید.");
-        await sendView(env, chatId, { text: lines.join("\n"), keyboard: kavehNodeKeyboard(made.node.id), html: false, protect: true });
+        await sendView(env, chatId, { text: lines.join("\n"), keyboard: omniNodeKeyboard(made.node.id), html: false, protect: true });
       } catch (err) {
         await sendView(env, chatId, { text: `❌ ساخت نود شکست: ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
       }
@@ -2754,10 +2754,10 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       await answerCallback(env, query.id, "کاربران نود");
       const nodeId = data.slice("v13:kaveh:users:".length);
       try {
-        const res = await kavehListUsers(env, principal, nodeId);
+        const res = await omniListUsers(env, principal, nodeId);
         const lines = [`👥 کاربران (${res.total}):`, ""];
         for (const u of res.users.slice(0, 15)) lines.push(`• ${u.username} — ${u.status} — ${((u.used_bytes || 0) / 1e9).toFixed(2)} از ${u.quota_gb} GB`);
-        await sendView(env, chatId, { text: lines.join("\n"), keyboard: kavehNodeKeyboard(nodeId), html: false });
+        await sendView(env, chatId, { text: lines.join("\n"), keyboard: omniNodeKeyboard(nodeId), html: false });
       } catch (err) {
         await sendView(env, chatId, { text: `❌ ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
       }
@@ -2768,8 +2768,8 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       const nodeId = data.slice("v13:kaveh:vip:".length);
       try {
         const name = `u${Date.now().toString(36).slice(-5)}`;
-        const made = await kavehNewUser(env, principal, nodeId, name, 50, 30);
-        await sendView(env, chatId, { text: `👤 ${name} ساخته شد.\n\n🔗 لینک اشتراک:\n${made.sub}`, keyboard: kavehNodeKeyboard(nodeId), html: false, protect: true });
+        const made = await omniNewUser(env, principal, nodeId, name, 50, 30);
+        await sendView(env, chatId, { text: `👤 ${name} ساخته شد.\n\n🔗 لینک اشتراک:\n${made.sub}`, keyboard: omniNodeKeyboard(nodeId), html: false, protect: true });
       } catch (err) {
         await sendView(env, chatId, { text: `❌ ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
       }
@@ -2779,8 +2779,8 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       await answerCallback(env, query.id, "بازیابی رمز…");
       const nodeId = data.slice("v13:kaveh:recover:".length);
       try {
-        const base = await kavehRecover(env, principal, nodeId);
-        await sendView(env, chatId, { text: `🔑 رمز مدیر پاک شد.\nاولین کسی که این لینک را باز کند رمز تازه می‌سازد — فقط به مالک بدهید:\n${base}/panel`, keyboard: kavehNodeKeyboard(nodeId), html: false, protect: true });
+        const base = await omniRecover(env, principal, nodeId);
+        await sendView(env, chatId, { text: `🔑 رمز مدیر پاک شد.\nاولین کسی که این لینک را باز کند رمز تازه می‌سازد — فقط به مالک بدهید:\n${base}/panel`, keyboard: omniNodeKeyboard(nodeId), html: false, protect: true });
       } catch (err) {
         await sendView(env, chatId, { text: `❌ ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
       }
@@ -2790,7 +2790,7 @@ async function handleCallbackUpdate(update: TelegramUpdate, env: Env): Promise<R
       await answerCallback(env, query.id, "حذف نود…");
       const nodeId = data.slice("v13:kaveh:del:".length);
       try {
-        await deleteKavehNodeFlow(env, principal, nodeId);
+        await deleteOmniNodeFlow(env, principal, nodeId);
         await sendView(env, chatId, { text: "🗑 نود و D1 آن از اکانت شما حذف شد.", keyboard: omniMainMenuKeyboard(), html: false });
       } catch (err) {
         await sendView(env, chatId, { text: `❌ ${err instanceof Error ? err.message : String(err)}`, keyboard: omniMainMenuKeyboard(), html: false });
