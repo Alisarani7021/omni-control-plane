@@ -248,7 +248,7 @@ async function ensureWorkersSubdomain(auth: CloudflareAuth, accountId: string, w
   } catch {
     // Not configured yet — try to create it once, like the worker did.
   }
-  const wanted = `${workerName}-${randomToken(2)}`.replace(/[^a-z0-9-]/gu, "-").slice(0, 32);
+  const wanted = `${workerName}-${randomToken(2)}`.toLowerCase().replace(/[^a-z0-9-]/gu, "-").slice(0, 32);
   try {
     const created = await cloudflareApi<{ subdomain?: string } | null>(
       auth,
