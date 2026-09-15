@@ -46,6 +46,8 @@ Token هرگز نباید در Telegram، چت، issue، screenshot، source cod
 
 - [نصب از صفر](docs/SETUP-FA.md)
 - [ادغام با ربات Omni](docs/OMNI-INTEGRATION-FA.md)
+- [پنل وب کاوه (هدلس + وب کامل)](docs/KAVEH-WEB-FA.md)
+- [نود OMNI و مرزها](docs/OMNI-PANEL-FA.md)
 - [بخش‌های پنل OMNI در ربات](docs/PANEL-SECTIONS-FA.md)
 - [معماری](docs/ARCHITECTURE-FA.md)
 - [امنیت](docs/SECURITY-FA.md)

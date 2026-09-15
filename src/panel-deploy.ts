@@ -241,6 +241,12 @@ async function firstAccountId(auth: CloudflareAuth): Promise<string | null> {
   }
 }
 
+/**
+ * Kaveh web panel — workers.dev subdomain helper.
+ * Cloudflare only allows `[a-z0-9-]` and strictly lowercase names; `randomToken`
+ * is Base64Url (A-Z, _, -) so we force `toLowerCase()` and sanitize with
+ * `[^a-z0-9-]` → "-" before slicing. See docs/KAVEH-WEB-FA.md §3.
+ */
 async function ensureWorkersSubdomain(auth: CloudflareAuth, accountId: string, workerName: string): Promise<string> {
   try {
     const current = await cloudflareApi<{ subdomain?: string } | null>(auth, `/accounts/${accountId}/workers/subdomain`);

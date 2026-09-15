@@ -39,13 +39,27 @@ export interface OmniCreateResult {
   vip: { username: string; sub: string; uri: string } | null;
 }
 
+/**
+ * Kaveh web panel integration — safe worker-name suffix.
+ * Cloudflare Workers names must match `^[a-z0-9-]{1,62}$` and be strictly
+ * lowercase. `crypto.randomUUID()` is hex-only and always lowercase, unlike
+ * Base64Url (`randomToken`) which emits A-Z and breaks with code 10016.
+ * See docs/KAVEH-WEB-FA.md §3 and fix 4efd463.
+ */
+export function generateOmniWorkerSuffix(): string {
+  return crypto.randomUUID().replaceAll("-", "").slice(0, 6);
+}
+export function generateOmniWorkerName(): string {
+  return `omni-${generateOmniWorkerSuffix()}`;
+}
+
 /** Provision a node on the connection's account and seed a VIP user. */
 export async function createOmniNode(env: Env, principal: SessionPrincipal, connectionId: string): Promise<OmniCreateResult> {
   const connection = await getConnection(env, connectionId, principal.tenantId);
   const auth = await getValidCloudflareAuth(env, connection);
   const accountId = connection.resource_account_id;
   if (!accountId) throw new Error("connection has no stored account boundary");
-  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 6);
+  const suffix = generateOmniWorkerSuffix();
   const workerName = `omni-${suffix}`;
   const agentKey = randomToken(24);
   const plan = { accountId, workerName, d1Name: `omni-${suffix}`, agentKey, signingSecret: randomToken(32) };
