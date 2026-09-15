@@ -30,7 +30,11 @@ export async function listOmniNodes(env: Env, principal: SessionPrincipal): Prom
 }
 
 async function agentKeyOf(env: Env, row: OmniNodeRow): Promise<string> {
-  return decryptJson<{ key: string }>(row.agent_key_enc, env.TOKEN_ENCRYPTION_KEY, `omni:${row.id}`).then((v) => v.key);
+  try {
+    return (await decryptJson<{ key: string }>(row.agent_key_enc, env.TOKEN_ENCRYPTION_KEY, `omni:${row.id}`)).key;
+  } catch {
+    return (await decryptJson<{ key: string }>(row.agent_key_enc, env.TOKEN_ENCRYPTION_KEY, `kaveh:${row.id}`)).key;
+  }
 }
 
 export interface OmniCreateResult {
@@ -74,7 +78,7 @@ export async function createOmniNode(env: Env, principal: SessionPrincipal, conn
     worker_name: workerName,
     d1_id: made.d1Id,
     base_url: baseUrl,
-    agent_key_enc: await encryptJson({ key: agentKey }, env.TOKEN_ENCRYPTION_KEY, `kaveh:${id}`),
+    agent_key_enc: await encryptJson({ key: agentKey }, env.TOKEN_ENCRYPTION_KEY, `omni:${id}`),
     created_at: nowIso(),
   };
   await env.DB.prepare("INSERT INTO kaveh_nodes (id, tenant_id, connection_id, account_id, worker_name, d1_id, base_url, agent_key_enc, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
